@@ -1,0 +1,5 @@
+.env
+server_data.db
+.idea/
+bugs.log
+discord.log
