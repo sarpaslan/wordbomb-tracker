@@ -204,7 +204,7 @@ async def assign_roles(member, count, guild):
 @bot.event
 async def on_raw_reaction_add(payload):
     # Constants
-    HECTOR_ID = 265196052192165888 #switch to hector's id
+    DEVELOPER_IDS = {265196052192165888, 849827666064048178} #switch to hector's id
     SUGGEST_REACTION = "☑️"
     BUG_EMOJI = "🐞"
     IDEA_EMOJI = "☑️"
@@ -282,7 +282,7 @@ async def on_raw_reaction_add(payload):
     # Point-log editing
     if payload.channel_id == POINT_LOGS_CHANNEL.id and str(payload.emoji.name) == "✅":
 
-        if payload.user_id != HECTOR_ID:
+        if payload.user_id not in DEVELOPER_IDS:
             return  # Ignore if not from a developer
 
         channel = bot.get_channel(payload.channel_id)
@@ -315,7 +315,7 @@ async def on_raw_reaction_add(payload):
         await message.edit(content=new_content)
 
     # Bug / Idea system
-    if payload.user_id != HECTOR_ID:
+    if payload.user_id not in DEVELOPER_IDS:
         return
 
     if payload.emoji.name not in emoji_channel_map:
