@@ -549,11 +549,48 @@ async def show_help(ctx):
 
     await ctx.send(embed=embed)
 
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, message_id: int, amount: int):
+    if amount < 1 or amount > 50:
+        await ctx.send("Amount must be between 1 and 50.", delete_after=5)
+        return
+
+    try:
+        ref_message = await ctx.channel.fetch_message(message_id)
+    except discord.NotFound:
+        await ctx.send("Message ID not found.", delete_after=5)
+        return
+    except discord.HTTPException as e:
+        await ctx.send(f"Failed to fetch message: {e}", delete_after=5)
+        return
+
+    messages_to_delete = []
+    async for msg in ctx.channel.history(after=ref_message, limit=amount):
+        messages_to_delete.append(msg)
+
+    messages_to_delete.insert(0, ref_message)
+
+    if not messages_to_delete:
+        await ctx.send("No messages found after that message.", delete_after=5)
+        return
+
+    try:
+        await ctx.channel.delete_messages(messages_to_delete)
+        await ctx.send(f"🧹 Deleted {len(messages_to_delete)} message(s).", delete_after=5)
+    except discord.HTTPException as e:
+        await ctx.send(f"Failed to delete messages: {e}", delete_after=5)
+
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
+    if isinstance(error, commands.MissingPermissions):
+        perms = ', '.join(error.missing_permissions)
+        await ctx.send(
+            f"Error in command `{ctx.command}`: You are missing `{perms}` permission(s) to run this command.",
+            delete_after=8
+        )
     else:
-        print(f"Error in command {ctx.command}: {error}")
+        # Log unexpected errors without crashing the bot
+        print(f"[ERROR] Unexpected error in command {ctx.command}: {error}")
 
 bot.run(token)
