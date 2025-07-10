@@ -479,7 +479,7 @@ async def show_help(ctx):
 
     embed = discord.Embed(
         title="📚 Server Commands Overview",
-        description="Here are the commands from our bots in this server:?",
+        description="Here are the commands from our bots in this server:",
         color=discord.Color.blue()
     )
 
