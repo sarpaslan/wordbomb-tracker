@@ -376,8 +376,13 @@ async def on_raw_reaction_add(payload):
         role = discord.utils.get(guild.roles, name=role_name)
         member = guild.get_member(author.id)
         if role and role not in member.roles:
-            await member.add_roles(role)
-            print(f"[DEBUG] {author.name} was given the '{role_name}' role.")
+            try:
+                await member.add_roles(role)
+                print(f"[DEBUG] {member.name} was given the '{role.name}' role.")
+            except discord.Forbidden:
+                print(f"[WARN] Bot doesn't have permission to assign the '{role.name}' role to {member.name}. Skipping.")
+            except discord.HTTPException as e:
+                print(f"[ERROR] Unexpected error when assigning role: {e}")
 
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
