@@ -356,19 +356,20 @@ async def on_raw_reaction_add(payload):
     #label = TABLE_LABELS.get(points_table, points_table)  # fallback to raw name if not found
     #await POINT_LOGS_CHANNEL.send(f"✅ {role_name} point recorded for {display_name}! {display_name} now has {new_count} {label}.")
 
-    # If it's a BUG, log to file
+    indented_content = '\n'.join(f"> {line}" for line in message.content.splitlines())
+
     if payload.emoji.name == BUG_EMOJI:
         if POINT_LOGS_CHANNEL:
             await POINT_LOGS_CHANNEL.send(
                 f"🐞 **Bug Reported** by {author.mention}:\n"
-                f"> {message.content}\n"
+                f"> {indented_content}\n"
                 f"🔗 {message.jump_url}\n"
             )
     elif payload.emoji.name == IDEA_EMOJI:
         if POINT_LOGS_CHANNEL:
             await POINT_LOGS_CHANNEL.send(
                 f"💡 **Approved Idea** by {author.mention}:\n"
-                f"> {message.content}\n"
+                f"> {indented_content}\n"
                 f"🔗 {message.jump_url}\n"
             )
 
