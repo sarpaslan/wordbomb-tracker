@@ -208,10 +208,18 @@ async def on_raw_reaction_add(payload):
 
     BUG_CHANNEL_ID = 1298328050668408946
     IDEAS_CHANNEL_ID = 1295770322985025669
+    POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
+
 
     emoji_channel_map = {
         BUG_EMOJI: (BUG_CHANNEL_ID, "bug_pointed_messages", "bug_points", "Bug Finder"),
         IDEA_EMOJI: (IDEAS_CHANNEL_ID, "idea_pointed_messages", "idea_points", "Idea Contributor"),
+    }
+
+    TABLE_LABELS = {
+        "suggest_points": "suggestion points",
+        "bug_points": "bug points",
+        "idea_points": "idea points"
     }
 
     # Ignore reactions from the dictionary bot
@@ -232,6 +240,7 @@ async def on_raw_reaction_add(payload):
         return
 
     author = message.author
+    display_name = message.author.display_name
 
     # Suggestion system
     if payload.emoji.name == SUGGEST_REACTION and payload.channel_id in LANGUAGE_CHANNEL_IDS:
@@ -266,6 +275,7 @@ async def on_raw_reaction_add(payload):
 
             await db.commit()
         print(f"[DEBUG] {author} now has {new_count} points in suggest_points.")
+        await POINT_LOGS_CHANNEL.send(f"✅ Suggestion point recorded for {display_name}! {display_name} now has {new_count} suggestion points.")
         return
 
     # Bug / Idea system
@@ -307,7 +317,8 @@ async def on_raw_reaction_add(payload):
         await db.commit()
 
     print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
-    await channel.send(f"✅ {role_name} point recorded for {author.mention}!")
+    label = TABLE_LABELS.get(points_table, points_table)  # fallback to raw name if not found
+    await POINT_LOGS_CHANNEL.send(f"✅ {role_name} point recorded for {display_name}! {display_name} now has {new_count} {label}.")
 
     # If it's a BUG, log to file
     if payload.emoji.name == BUG_EMOJI:
@@ -322,9 +333,8 @@ async def on_raw_reaction_add(payload):
 
     # 💡 If it's an IDEA, forward to mod-ideas channel
     elif payload.emoji.name == IDEA_EMOJI:
-        mod_ideas_channel = guild.get_channel(1384753231820886108)  # mod ideas channel id
-        if mod_ideas_channel:
-            await mod_ideas_channel.send(
+        if POINT_LOGS_CHANNEL:
+            await POINT_LOGS_CHANNEL.send(
                 f"☑️ **Approved Idea** by {author.mention}:\n{message.content}\n🔗 {message.jump_url}"
             )
         print("[DEBUG] Idea forwarded to mod-ideas channel.")
