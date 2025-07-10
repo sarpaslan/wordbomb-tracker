@@ -16,6 +16,7 @@ handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w'
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.reactions = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, log_handler=handler, log_level=logging.DEBUG, help_command=None)
 
@@ -105,8 +106,14 @@ OTHER_BOTS_COMMANDS = {
                           "!help - Get help on the usage of commands"]
 }
 
+POINT_LOGS_CHANNEL = None
+
 @bot.event
 async def on_ready():
+
+    global POINT_LOGS_CHANNEL
+    POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
+
     for cmd in bot.commands:
         print(f"Loaded command: {cmd.name}")
     print(f"[DEBUG] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
@@ -154,7 +161,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    #print(f"[DEBUG] Message from {message.author}: {message.content}")
     if message.author.bot:
         return
 
@@ -177,7 +183,6 @@ async def on_message(message):
             await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
 
         await db.commit()
-        #print(f"[DEBUG] {message.author} now has {new_count} messages.")
 
     # Assign roles if needed
     await assign_roles(message.author, new_count, message.guild)
@@ -208,8 +213,7 @@ async def on_raw_reaction_add(payload):
 
     BUG_CHANNEL_ID = 1298328050668408946
     IDEAS_CHANNEL_ID = 1295770322985025669
-    POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
-
+    #POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
 
     emoji_channel_map = {
         BUG_EMOJI: (BUG_CHANNEL_ID, "bug_pointed_messages", "bug_points", "Bug Finder"),
@@ -240,7 +244,6 @@ async def on_raw_reaction_add(payload):
         return
 
     author = message.author
-    display_name = message.author.display_name
 
     # Suggestion system
     if payload.emoji.name == SUGGEST_REACTION and payload.channel_id in LANGUAGE_CHANNEL_IDS:
@@ -274,9 +277,42 @@ async def on_raw_reaction_add(payload):
                 await db.execute("INSERT INTO suggest_points (user_id, count) VALUES (?, ?)", (author.id, 1))
 
             await db.commit()
-        print(f"[DEBUG] {author} now has {new_count} points in suggest_points.")
-        await POINT_LOGS_CHANNEL.send(f"✅ Suggestion point recorded for {display_name}! {display_name} now has {new_count} suggestion points.")
         return
+
+    # Point-log editing
+    if payload.channel_id == POINT_LOGS_CHANNEL.id and str(payload.emoji.name) == "✅":
+
+        if payload.user_id != HECTOR_ID:
+            return  # Ignore if not from a developer
+
+        channel = bot.get_channel(payload.channel_id)
+        if not channel:
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return
+
+        lines = message.content.splitlines()
+        if not lines:
+            return
+
+        first_line = lines[0]
+        rest_of_message = "\n".join(lines[1:])
+
+        if first_line.startswith("🐞"):
+            # Extract mention from the line
+            mention = message.mentions[0].mention if message.mentions else "the reporter"
+            new_first_line = f"🟢 Fixed Bug, reported by {mention}"
+        elif first_line.startswith("💡"):
+            mention = message.mentions[0].mention if message.mentions else "the suggester"
+            new_first_line = f"🟢 Implemented Idea by {mention}"
+        else:
+            new_first_line = "🟢 Handled"
+
+        new_content = f"{new_first_line}\n{rest_of_message}"
+        await message.edit(content=new_content)
 
     # Bug / Idea system
     if payload.user_id != HECTOR_ID:
@@ -317,27 +353,21 @@ async def on_raw_reaction_add(payload):
         await db.commit()
 
     print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
-    label = TABLE_LABELS.get(points_table, points_table)  # fallback to raw name if not found
-    await POINT_LOGS_CHANNEL.send(f"✅ {role_name} point recorded for {display_name}! {display_name} now has {new_count} {label}.")
+    #label = TABLE_LABELS.get(points_table, points_table)  # fallback to raw name if not found
+    #await POINT_LOGS_CHANNEL.send(f"✅ {role_name} point recorded for {display_name}! {display_name} now has {new_count} {label}.")
 
     # If it's a BUG, log to file
     if payload.emoji.name == BUG_EMOJI:
-        with open("bugs.log", "a", encoding="utf-8") as logfile:
-            logfile.write(
-                f"[BUG] {author} ({author.id}) in #{channel.name}:\n"
-                f"Message: {message.content}\n"
-                f"Link: {message.jump_url}\n"
-                f"{'-' * 60}\n"
+        if POINT_LOGS_CHANNEL:
+            await POINT_LOGS_CHANNEL.send(
+                f"🐞 **Bug Reported** by {author.mention}:\n"
+                f"{message.content}\n🔗 {message.jump_url}"
             )
-        print("[DEBUG] Bug logged to file.")
-
-    # 💡 If it's an IDEA, forward to mod-ideas channel
     elif payload.emoji.name == IDEA_EMOJI:
         if POINT_LOGS_CHANNEL:
             await POINT_LOGS_CHANNEL.send(
-                f"☑️ **Approved Idea** by {author.mention}:\n{message.content}\n🔗 {message.jump_url}"
+                f"💡 **Approved Idea** by {author.mention}:\n{message.content}\n🔗 {message.jump_url}"
             )
-        print("[DEBUG] Idea forwarded to mod-ideas channel.")
 
     if new_count >= POINT_THRESHOLD:
         role = discord.utils.get(guild.roles, name=role_name)
