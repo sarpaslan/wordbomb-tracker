@@ -473,12 +473,13 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     else:
         await ctx_or_interaction.send(embed=embed, view=view)
 
+
 @bot.command(name="help")
 async def show_help(ctx):
 
     embed = discord.Embed(
         title="📚 Server Commands Overview",
-        description="Here are the commands from our bots in this server:",
+        description="Here are the commands from our bots in this server:?",
         color=discord.Color.blue()
     )
 
