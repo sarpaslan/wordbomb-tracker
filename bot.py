@@ -106,7 +106,13 @@ OTHER_BOTS_COMMANDS = {
                   "!i - Get information about a word",
                   "!s - Get information about a syllable"],
     "Word Bomb Tracker": ["!leaderboards - Get information on the leaderboard",
-                          "!help - Get help on the usage of commands"]
+                          "!help - Get help on the usage of commands"],
+    "Talk to get more roles!": ["Active - 100 messages",
+                                "Talker - 1,000 messages",
+                                "Speaker - 5,000 messages",
+                                "Veteran - 10,000 messages",
+                                "Elite - 20,000 messages",
+                                "Legend - 40,000 messages"]
 }
 
 POINT_LOGS_CHANNEL = None
