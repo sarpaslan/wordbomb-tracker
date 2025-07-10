@@ -23,8 +23,11 @@ bot = commands.Bot(command_prefix='!', intents=intents, log_handler=handler, log
 # Threshold-based roles
 MESSAGE_THRESHOLDS = {
     100: "Active",
-    2000: "Veteran",
-    10000: "Elite"
+    1000: "Talker",
+    5000: "Speaker",
+    10000: "Veteran",
+    20000: "Elite",
+    40000: "Legend"
 }
 
 LANGUAGE_MOD_IDS = {
