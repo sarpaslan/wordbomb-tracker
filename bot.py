@@ -102,7 +102,7 @@ OTHER_BOTS_COMMANDS = {
                   "/wordle - Get Wordle results for a user",
                   "!i - Get information about a word",
                   "!s - Get information about a syllable"],
-    "Word Bomb Tracker": ["!leaderboard - Get information on the leaderboard",
+    "Word Bomb Tracker": ["!leaderboards - Get information on the leaderboard",
                           "!help - Get help on the usage of commands"]
 }
 
@@ -113,6 +113,11 @@ async def on_ready():
 
     global POINT_LOGS_CHANNEL
     POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
+
+    if POINT_LOGS_CHANNEL:
+        print(f"[DEBUG] POINT_LOGS_CHANNEL loaded: {POINT_LOGS_CHANNEL.name} ({POINT_LOGS_CHANNEL.id})")
+    else:
+        print("[ERROR] POINT_LOGS_CHANNEL could not be loaded.")
 
     for cmd in bot.commands:
         print(f"Loaded command: {cmd.name}")
@@ -280,7 +285,8 @@ async def on_raw_reaction_add(payload):
         return
 
     # Point-log editing
-    if payload.channel_id == POINT_LOGS_CHANNEL.id and str(payload.emoji.name) == "✅":
+    if payload.channel_id == 1392585590532341782 and str(payload.emoji.name) == "✅":
+        channel = await bot.fetch_channel(payload.channel_id)  # Fetches the channel properly
 
         if payload.user_id not in DEVELOPER_IDS:
             return  # Ignore if not from a developer
@@ -400,10 +406,6 @@ class LeaderboardView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Suggestions", style=discord.ButtonStyle.primary, custom_id="category_suggestions")
-    async def suggestions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "suggestions", 1, self.author_id)
-
     @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, custom_id="category_messages")
     async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await update_leaderboard(interaction, "messages", 1, self.author_id)
@@ -416,9 +418,9 @@ class LeaderboardView(discord.ui.View):
     async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await update_leaderboard(interaction, "ideas", 1, self.author_id)
 
-@bot.command()
-async def leaderboard(ctx, category: str = "suggestions"):
-    await update_leaderboard(ctx, category.lower(), 1, ctx.author.id)
+    @discord.ui.button(label="Suggestions", style=discord.ButtonStyle.primary, custom_id="category_suggestions")
+    async def suggestions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "suggestions", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table_map = {
@@ -429,10 +431,10 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     }
 
     label_map = {
-        "suggestions": "suggestions",
-        "messages": "messages",
-        "bugs": "bugs found",
-        "ideas": "ideas"
+        "suggestions": ("suggestion", "suggestions"),
+        "messages": ("message", "messages"),
+        "bugs": ("bug found", "bugs found"),
+        "ideas": ("idea", "ideas")
     }
 
     if category not in table_map:
@@ -443,7 +445,6 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         return
 
     table = table_map[category]
-    unit = label_map[category]
 
     async with aiosqlite.connect("server_data.db") as db:
         async with db.execute(f"SELECT user_id, count FROM {table} ORDER BY count DESC") as cursor:
@@ -473,6 +474,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
             user = await bot.fetch_user(user_id)
             username = user.name if user else f"User {user_id}"
 
+        singular, plural = label_map[category]
+        unit = singular if count == 1 else plural
         line = f"{i}. {username} • **{count} {unit}**"
         lines.append(line)
 
@@ -488,6 +491,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                 user = await bot.fetch_user(user_id)
                 username = user.name if user else f"User {user_id}"
 
+            singular, plural = label_map[category]
+            unit = singular if count == 1 else plural
             line = f"10. {username} • **{count} {unit}**"
             if user_id == author_id:
                 line = f"{author_rank}. {username} • **{count} {unit}**"
@@ -502,6 +507,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                 user = await bot.fetch_user(author_id)
                 username = user.name if user else f"User {author_id}"
 
+            singular, plural = label_map[category]
+            unit = singular if author_points == 1 else plural
             line = f"...\n➤ {author_rank}.\u200B {username} • **{author_points} {unit}**"
             lines.append(line)
         else:
@@ -522,6 +529,9 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     else:
         await ctx_or_interaction.send(embed=embed, view=view)
 
+@bot.command()
+async def leaderboards(ctx, category: str = "messages"):
+    await update_leaderboard(ctx, category.lower(), 1, ctx.author.id)
 
 @bot.command(name="help")
 async def show_help(ctx):
