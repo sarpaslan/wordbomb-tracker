@@ -6,6 +6,7 @@ import os
 import aiosqlite
 import random
 import datetime
+import time
 
 # Load token
 load_dotenv()
@@ -100,6 +101,8 @@ voice_states = {}
 
 EXCLUDED_VC_IDS = {1390402088483422289, 1390454038142914720}
 
+last_message_times = {}
+
 OTHER_BOTS_COMMANDS = {
     "Word Bomb": ["/claims - Get claims information",
                   "/collection - Get collection information for a user",
@@ -193,62 +196,67 @@ async def on_ready():
         """)
         await db.commit()
 
+
 @bot.event
 async def on_message(message):
-
     if message.author.bot:
         return
 
+    user_id = message.author.id
+    now = time.time()
+
     if message.channel.id not in EXCLUDED_CHANNEL_IDS:
-        # Message tracking
-        async with aiosqlite.connect("server_data.db") as db:
-            user_id = message.author.id
-            async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
+        # Check if user sent another message within 3 seconds
+        last_time = last_message_times.get(user_id, 0)
+        if now - last_time >= 3:
+            last_message_times[user_id] = now  # Update last valid message time
 
-            if row:
-                new_count = row[0] + 1
-                await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
-            else:
-                new_count = 1
-                await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
-
-            await db.commit()
-
-        # Assign roles if needed
-        await assign_roles(message.author, new_count, message.guild)
-
-        if random.randint(1, 7000) == 1:
+            # Message tracking
             async with aiosqlite.connect("server_data.db") as db:
-                user_id = message.author.id
-                # Fetch current candy count
-                async with db.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,)) as cursor:
+                async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
                     row = await cursor.fetchone()
 
                 if row:
-                    new_candy_count = row[0] + 1
-                    await db.execute("UPDATE candies SET count = ? WHERE user_id = ?", (new_candy_count, user_id))
+                    new_count = row[0] + 1
+                    await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
                 else:
-                    new_candy_count = 1
-                    await db.execute("INSERT INTO candies (user_id, count) VALUES (?, ?)", (user_id, 1))
+                    new_count = 1
+                    await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
 
                 await db.commit()
 
-            # Send celebratory message
-            await message.channel.send(
-                f"# 🍭 CANDY DROP! 🍬\n"
-                f"{message.author.mention}, you got a **free candy** for chatting!\n"
-                f"You're now at **{new_candy_count}** total candies! ✨"
-            )
+            # Assign roles if needed
+            await assign_roles(message.author, new_count, message.guild)
 
-            # Assign candy master role if applicable
-            CANDY_ROLE_NAME = "CANDY GOD"
-            if new_candy_count >= 10:
+            # Candy drop (unchanged)
+            if random.randint(1, 7000) == 1:
+                async with aiosqlite.connect("server_data.db") as db:
+                    async with db.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,)) as cursor:
+                        row = await cursor.fetchone()
+
+                    if row:
+                        new_candy_count = row[0] + 1
+                        await db.execute("UPDATE candies SET count = ? WHERE user_id = ?", (new_candy_count, user_id))
+                    else:
+                        new_candy_count = 1
+                        await db.execute("INSERT INTO candies (user_id, count) VALUES (?, ?)", (user_id, 1))
+
+                    await db.commit()
+
+                await message.channel.send(
+                    f"# 🍭 CANDY DROP! 🍬\n"
+                    f"{message.author.mention}, you got a **free candy** for chatting!\n"
+                    f"You're now at **{new_candy_count}** total candies! ✨"
+                )
+
+                CANDY_ROLE_NAME = "CANDY GOD"
                 role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
                 if role and role not in message.author.roles:
                     if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
                         await message.author.add_roles(role)
                         print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
+        else:
+            print(f"[DEBUG] Message from {message.author.name} ignored (sent too soon)")
 
     await bot.process_commands(message)
 
