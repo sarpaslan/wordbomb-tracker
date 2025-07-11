@@ -256,7 +256,7 @@ async def on_message(message):
                         await message.author.add_roles(role)
                         print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
         else:
-            print(f"[DEBUG] Message from {message.author.name} ignored (sent too soon)")
+            pass
 
     await bot.process_commands(message)
 
