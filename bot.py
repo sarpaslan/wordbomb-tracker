@@ -4,7 +4,7 @@ import logging
 from dotenv import load_dotenv
 import os
 import aiosqlite
-import re
+import random
 
 # Load token
 load_dotenv()
@@ -92,6 +92,7 @@ EXCLUDED_CHANNEL_IDS = {
     1383399537661444146,  # finnish search words channel
     1392393127700205680, # music commands channel
     1328176869572612288, # normal commands channel
+    1349650156001431592, # what channel
 }
 
 OTHER_BOTS_COMMANDS = {
@@ -172,6 +173,13 @@ async def on_ready():
                 message_id INTEGER PRIMARY KEY
             )
         """)
+        # Candies
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS candies (
+                user_id INTEGER PRIMARY KEY,
+                count INTEGER NOT NULL
+            )
+        """)
         await db.commit()
 
 @bot.event
@@ -198,6 +206,38 @@ async def on_message(message):
 
         # Assign roles if needed
         await assign_roles(message.author, new_count, message.guild)
+
+        if random.randint(1, 3000) == 1:
+            async with aiosqlite.connect("server_data.db") as db:
+                user_id = message.author.id
+                # Fetch current candy count
+                async with db.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+
+                if row:
+                    new_candy_count = row[0] + 1
+                    await db.execute("UPDATE candies SET count = ? WHERE user_id = ?", (new_candy_count, user_id))
+                else:
+                    new_candy_count = 1
+                    await db.execute("INSERT INTO candies (user_id, count) VALUES (?, ?)", (user_id, 1))
+
+                await db.commit()
+
+            # Send celebratory message
+            await message.channel.send(
+                f"# 🍭 CANDY DROP! 🍬\n"
+                f"{message.author.mention}, you got a **free candy** for chatting!\n"
+                f"You're now at **{new_candy_count}** total candies! ✨"
+            )
+
+            # Assign candy master role if applicable
+            CANDY_ROLE_NAME = "CANDY GOD"
+            if new_candy_count >= 10:
+                role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
+                if role and role not in message.author.roles:
+                    if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
+                        await message.author.add_roles(role)
+                        print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
 
     await bot.process_commands(message)
 
