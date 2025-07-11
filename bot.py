@@ -655,16 +655,6 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
 async def l(ctx, category: str = "messages"):
     await update_leaderboard(ctx, category.lower(), 1, ctx.author.id)
 
-@bot.command()
-async def clear_bug_idea_data(ctx):
-    async with aiosqlite.connect("server_data.db") as db:
-        await db.execute("DELETE FROM bug_points")
-        await db.execute("DELETE FROM idea_points")
-        await db.execute("DELETE FROM bug_pointed_messages")
-        await db.execute("DELETE FROM idea_pointed_messages")
-        await db.commit()
-    await ctx.send("✅ Cleared all bug and idea data.")
-
 @bot.command(name="help")
 async def show_help(ctx):
 
