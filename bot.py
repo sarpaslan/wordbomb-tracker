@@ -651,8 +651,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     else:
         await ctx_or_interaction.send(embed=embed, view=view)
 
-@bot.command()
-async def leaderboards(ctx, category: str = "messages"):
+@bot.command(name="l", aliases=["leaderboard", "leaderboards", "lb"])
+async def l(ctx, category: str = "messages"):
     await update_leaderboard(ctx, category.lower(), 1, ctx.author.id)
 
 @bot.command(name="help")
