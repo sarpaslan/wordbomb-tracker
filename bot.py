@@ -188,29 +188,28 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+
     if message.author.bot:
         return
 
-    if message.channel.id in EXCLUDED_CHANNEL_IDS:
-        return
+    if message.channel.id not in EXCLUDED_CHANNEL_IDS:
+        # Message tracking
+        async with aiosqlite.connect("server_data.db") as db:
+            user_id = message.author.id
+            async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
 
-    # Message tracking
-    async with aiosqlite.connect("server_data.db") as db:
-        user_id = message.author.id
-        async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
+            if row:
+                new_count = row[0] + 1
+                await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
+            else:
+                new_count = 1
+                await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
 
-        if row:
-            new_count = row[0] + 1
-            await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
-        else:
-            new_count = 1
-            await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
+            await db.commit()
 
-        await db.commit()
-
-    # Assign roles if needed
-    await assign_roles(message.author, new_count, message.guild)
+        # Assign roles if needed
+        await assign_roles(message.author, new_count, message.guild)
 
     await bot.process_commands(message)
 
