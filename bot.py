@@ -31,18 +31,6 @@ MESSAGE_THRESHOLDS = {
     40000: "Legend"
 }
 
-EMOJI_REGEX = re.compile(
-    "[" 
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F680-\U0001F6FF"  # transport & map symbols
-    "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-    "\U00002702-\U000027B0"  # Dingbats
-    "\U000024C2-\U0001F251"
-    "]+",
-    flags=re.UNICODE
-)
-
 LANGUAGE_MOD_IDS = {
     265196052192165888,  # Hector (en-US, ru), admin, legend
     1032529324303200278,  # Lex-ico (es-ES, mc-MC, ca-CA), admin, legend
@@ -224,9 +212,6 @@ async def assign_roles(member, count, guild):
                     print(f"[DEBUG] Gave role {role_name} to {member.name}")
                 else:
                     print(f"[WARN] Missing permissions to assign {role_name} to {member.name}")
-
-def remove_emojis(text):
-    return EMOJI_REGEX.sub("", text).strip()
 
 @bot.event
 async def on_raw_reaction_add(payload):
@@ -491,7 +476,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     for i, (user_id, count) in enumerate(top_9, start=1):
         member = ctx_or_interaction.guild.get_member(user_id)
         if member:
-            username = remove_emojis(member.display_name)
+            username = member.display_name
         else:
             user = await bot.fetch_user(user_id)
             username = user.name if user else f"User {user_id}"
@@ -508,7 +493,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
             user_id, count = full_rows[9]
             member = ctx_or_interaction.guild.get_member(user_id)
             if member:
-                username = remove_emojis(member.display_name)
+                username = member.display_name
             else:
                 user = await bot.fetch_user(user_id)
                 username = user.name if user else f"User {user_id}"
@@ -524,7 +509,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         if author_points > 0:
             member = ctx_or_interaction.guild.get_member(author_id)
             if member:
-                username = remove_emojis(member.display_name)
+                username = member.display_name
             else:
                 user = await bot.fetch_user(author_id)
                 username = user.name if user else f"User {author_id}"
