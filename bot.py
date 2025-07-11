@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import aiosqlite
 import random
+import datetime
 
 # Load token
 load_dotenv()
@@ -95,6 +96,10 @@ EXCLUDED_CHANNEL_IDS = {
     1349650156001431592, # what channel
 }
 
+voice_states = {}
+
+EXCLUDED_VC_IDS = {1390402088483422289, 1390454038142914720}
+
 OTHER_BOTS_COMMANDS = {
     "Word Bomb": ["/claims - Get claims information",
                   "/collection - Get collection information for a user",
@@ -159,6 +164,12 @@ async def on_ready():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS voice_time (
+                user_id INTEGER PRIMARY KEY,
+                seconds INTEGER NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS bug_pointed_messages (
                 message_id INTEGER PRIMARY KEY
             )
@@ -207,7 +218,7 @@ async def on_message(message):
         # Assign roles if needed
         await assign_roles(message.author, new_count, message.guild)
 
-        if random.randint(1, 3000) == 1:
+        if random.randint(1, 7000) == 1:
             async with aiosqlite.connect("server_data.db") as db:
                 user_id = message.author.id
                 # Fetch current candy count
@@ -438,6 +449,28 @@ async def on_raw_reaction_add(payload):
             except discord.HTTPException as e:
                 print(f"[ERROR] Unexpected error when assigning role: {e}")
 
+@bot.event
+async def on_voice_state_update(member, before, after):
+    now = datetime.datetime.utcnow()
+
+    if before.channel and before.channel.id not in EXCLUDED_VC_IDS:
+        key = (member.guild.id, member.id)
+        join_time = voice_states.pop(key, None)
+        if join_time:
+            seconds = int((now - join_time).total_seconds())
+            async with aiosqlite.connect("server_data.db") as db:
+                async with db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (member.id,)) as cursor:
+                    row = await cursor.fetchone()
+                if row:
+                    total = row[0] + seconds
+                    await db.execute("UPDATE voice_time SET seconds = ? WHERE user_id = ?", (total, member.id))
+                else:
+                    await db.execute("INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)", (member.id, seconds))
+                await db.commit()
+
+    if after.channel and after.channel.id not in EXCLUDED_VC_IDS:
+        voice_states[(member.guild.id, member.id)] = now
+
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
         super().__init__(timeout=60)
@@ -469,19 +502,25 @@ class LeaderboardView(discord.ui.View):
     async def suggestions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await update_leaderboard(interaction, "suggestions", 1, self.author_id)
 
+    @discord.ui.button(label="Voice", style=discord.ButtonStyle.primary, custom_id="category_voice")
+    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "voice", 1, self.author_id)
+
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table_map = {
         "suggestions": "suggest_points",
         "messages": "messages",
         "bugs": "bug_points",
-        "ideas": "idea_points"
+        "ideas": "idea_points",
+        "voice": "voice_time"
     }
 
     label_map = {
         "suggestions": ("suggestion", "suggestions"),
         "messages": ("message", "messages"),
         "bugs": ("bug found", "bugs found"),
-        "ideas": ("idea", "ideas")
+        "ideas": ("idea", "ideas"),
+        "voice": ("second", "seconds")
     }
 
     if category not in table_map:
@@ -494,7 +533,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table = table_map[category]
 
     async with aiosqlite.connect("server_data.db") as db:
-        async with db.execute(f"SELECT user_id, count FROM {table} ORDER BY count DESC") as cursor:
+        time_column = "seconds" if category == "voice" else "count"
+        async with db.execute(f"SELECT user_id, {time_column} FROM {table} ORDER BY {time_column} DESC") as cursor:
             full_rows = await cursor.fetchall()
 
     total_entries = len(full_rows)
@@ -522,8 +562,16 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
             username = user.name if user else f"User {user_id}"
 
         singular, plural = label_map[category]
-        unit = singular if count == 1 else plural
-        line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{count} {unit}**"
+        if category == "voice":
+            hours = count // 3600
+            minutes = (count % 3600) // 60
+            seconds = count % 60
+            time_str = f"{hours}h {minutes}m {seconds}s"
+            line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{time_str}**"
+        else:
+            unit = singular if count == 1 else plural
+            line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{count} {unit}**"
+
         lines.append(line)
 
     # Now decide what to show in the last line:
@@ -539,10 +587,21 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                 username = user.name if user else f"User {user_id}"
 
             singular, plural = label_map[category]
-            unit = singular if count == 1 else plural
-            line = f"10. {username} • **{count} {unit}**"
+            if category == "voice":
+                hours = count // 3600
+                minutes = (count % 3600) // 60
+                seconds = count % 60
+                time_str = f"{hours}h {minutes}m {seconds}s"
+                line = f"10. {username} • **{time_str}**"
+            else:
+                unit = singular if count == 1 else plural
+                line = f"10. {username} • **{count} {unit}**"
+
             if user_id == author_id:
-                line = f"{author_rank}. {username} • **{count} {unit}**"
+                if category == "voice":
+                    line = f"{author_rank}. {username} • **{time_str}**"
+                else:
+                    line = f"{author_rank}. {username} • **{count} {unit}**"
             lines.append(line)
     else:
         # User is ranked but not in top 9 → show user's real position
@@ -554,9 +613,17 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                 user = await bot.fetch_user(author_id)
                 username = user.name if user else f"User {author_id}"
 
-            singular, plural = label_map[category]
-            unit = singular if author_points == 1 else plural
-            line = f"...\n➤ {author_rank}.\u200B {username} • **{author_points} {unit}**"
+            if category == "voice":
+                hours = author_points // 3600
+                minutes = (author_points % 3600) // 60
+                seconds = author_points % 60
+                time_str = f"{hours}h {minutes}m {seconds}s"
+                line = f"...\n➤ {author_rank}.\u200B {username} • **{time_str}**"
+            else:
+                singular, plural = label_map[category]
+                unit = singular if author_points == 1 else plural
+                line = f"...\n➤ {author_rank}.\u200B {username} • **{author_points} {unit}**"
+
             lines.append(line)
         else:
             lines.append("*You are currently unranked.*")
