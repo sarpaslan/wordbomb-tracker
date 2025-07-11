@@ -483,7 +483,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
 
         singular, plural = label_map[category]
         unit = singular if count == 1 else plural
-        line = f"{i}. {username} • **{count} {unit}**"
+        line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{count} {unit}**"
         lines.append(line)
 
     # Now decide what to show in the last line:
