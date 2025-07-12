@@ -464,6 +464,10 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    
+    if member.bot:
+        return
+    
     now = datetime.datetime.utcnow()
 
     if before.channel and before.channel.id not in EXCLUDED_VC_IDS:
