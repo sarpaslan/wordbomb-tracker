@@ -253,13 +253,13 @@ async def on_message(message):
                     f"{message.author.mention}, you got a **free candy** for chatting!\n"
                     f"You're now at **{new_candy_count}** total candies! ✨"
                 )
-
-                CANDY_ROLE_NAME = "CANDY GOD"
-                role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
-                if role and role not in message.author.roles:
-                    if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
-                        await message.author.add_roles(role)
-                        print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
+                if new_candy_count >= 10:
+                    CANDY_ROLE_NAME = "CANDY GOD"
+                    role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
+                    if role and role not in message.author.roles:
+                        if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
+                            await message.author.add_roles(role)
+                            print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
         else:
             pass
 
