@@ -13,8 +13,6 @@ def home():
 def azaz():
     return "welcome azaz!"
 
-import sqlite3
-
 @app.route("/user/<int:user_id>")
 def show_user(user_id):
     try:
@@ -81,3 +79,4 @@ def show_user(user_id):
 
     except Exception as e:
         return f"Error: {str(e)}"
+
