@@ -7,22 +7,7 @@ import os
 import sqlite3
 
 app = Flask(__name__)
-
-# Load token
-load_dotenv()
-token = os.getenv('DISCORD_TOKEN')
-
-# Logging setup
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-
-# Intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.reactions = True
-
-bot = commands.Bot(command_prefix='!', intents=intents, log_handler=handler, log_level=logging.DEBUG, help_command=None)
-
+print("App started")
 @app.route("/user/<int:user_id>")
 def show_user(user_id):
     try:
@@ -75,11 +60,12 @@ def show_user(user_id):
 
         # Attempt to get user's display name from Discord cache
         display_name = str(user_id)  # default
+        '''
         for guild in bot.guilds:
             member = guild.get_member(user_id)
             if member:
                 display_name = member.display_name
-                break
+                break'''
 
         if not stats:
             return f"No data found for user {display_name}."
