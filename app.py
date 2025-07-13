@@ -27,7 +27,11 @@ bot = commands.Bot(command_prefix='!', intents=intents, log_handler=handler, log
 def show_user(user_id):
     try:
         # Open the DB connection
-        conn = sqlite3.connect("D:\wordbomb-tracker\server_data.db")
+
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_PATH = os.path.join(BASE_DIR, "server_data.db")
+
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         stats = {}
@@ -92,4 +96,4 @@ def show_user(user_id):
     
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run()
