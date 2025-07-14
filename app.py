@@ -24,7 +24,6 @@ def home():
 @limiter.limit("10 per minute")           # Individual limit for this route
 @cache.cached(timeout=60)                 # Cache results for 60 seconds
 def api_user(user_id):
-    print("Running DB query for", user_id)
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         DB_PATH = os.path.join(BASE_DIR, "server_data.db")
