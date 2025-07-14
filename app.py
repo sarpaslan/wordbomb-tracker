@@ -22,7 +22,7 @@ def home():
 
 @app.route("/api/user/<int:user_id>")
 @limiter.limit("10 per minute")           # Individual limit for this route
-@cache.cached(timeout=60)                 # Cache results for 60 seconds
+@cache.memoize(timeout=60)                 # Cache results for 60 seconds
 def api_user(user_id):
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
