@@ -677,6 +677,36 @@ async def show_help(ctx):
 
     await ctx.send(embed=embed)
 
+@bot.command(name="give")
+async def give_time(ctx, member: discord.Member, seconds: int):
+    ALLOWED_USER_ID = 849827666064048178  # Change this to the allowed user's ID
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    if seconds <= 0:
+        await ctx.send("❌ Please enter a positive number of seconds.")
+        return
+
+    async with aiosqlite.connect("server_data.db") as db:
+        async with db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (member.id,)) as cursor:
+            row = await cursor.fetchone()
+
+        if row:
+            total = row[0] + seconds
+            await db.execute("UPDATE voice_time SET seconds = ? WHERE user_id = ?", (total, member.id))
+        else:
+            total = seconds
+            await db.execute("INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)", (member.id, seconds))
+
+        await db.commit()
+
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    sec = total % 60
+    await ctx.send(f"✅ Added `{seconds}` seconds to {member.mention}. New total: **{hours}h {minutes}m {sec}s**")
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
