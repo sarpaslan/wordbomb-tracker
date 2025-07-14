@@ -22,7 +22,7 @@ def home():
 
 @app.route("/api/user/<int:user_id>")
 @limiter.limit("10 per minute")           # Individual limit for this route
-@cache.memoize(timeout=60)                 # Cache results for 60 seconds
+@cache.memoize(timeout=60)                 # Server cache results for 60 seconds
 def api_user(user_id):
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +70,9 @@ def api_user(user_id):
         if not stats:
             return jsonify({"error": f"No data found for user {user_id}."}), 404
 
-        return jsonify({"user_id": user_id, "stats": stats})
+        response = make_response(jsonify({"user_id": user_id, "stats": stats}))
+        response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        return response
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
