@@ -1,17 +1,30 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_caching import Cache
+from flask import make_response
 import os
 import sqlite3
 
 app = Flask(__name__)
 CORS(app)
 
+# Rate limiting: 30 requests per minute per IP
+limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
+
+# Simple in-memory caching (you can later use Redis or other backends)
+cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
+
 @app.route("/")
 def home():
-    return jsonify({"message": "🚀 App is deployed and running!"})
+    return jsonify({"message": "App is deployed and running!"})
 
 @app.route("/api/user/<int:user_id>")
+@limiter.limit("10 per minute")           # Individual limit for this route
+@cache.cached(timeout=60)                 # Cache results for 60 seconds
 def api_user(user_id):
+    print("Running DB query for", user_id)
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         DB_PATH = os.path.join(BASE_DIR, "server_data.db")
@@ -62,6 +75,13 @@ def api_user(user_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return make_response(jsonify({
+        "error": "Rate limit exceeded",
+        "message": str(e.description)
+    }), 429)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
