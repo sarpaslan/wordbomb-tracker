@@ -15,7 +15,7 @@ CORS(app)
 
 # --- Configuration ---
 # It's recommended to use environment variables for sensitive data like the bot token.
-DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
+DISCORD_BOT_TOKEN = "MTM5MjM1MTQzNTM3ODY1NTIzMg.GnZle8.EROnDsQZKHaooey59ujC-aJITQ-7t9c4WdClHU"#os.environ.get("DISCORD_TOKEN")
 
 # Rate limiting: 30 requests per minute per IP
 limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
@@ -125,12 +125,10 @@ def user_message_details(user_id):
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         DB_PATH = os.path.join(BASE_DIR, "server_data.db")
         conn = sqlite3.connect(DB_PATH)
-        # Use a row factory to get dictionary-like results, which is cleaner
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # ✅ CHANGE 1: Get the user's rank from the main 'messages' leaderboard
-        # This query ranks all users by their total message count and finds the specific user's rank.
+        # Get the user's rank (no changes here)
         cursor.execute("""
             SELECT rank FROM (
                 SELECT user_id, RANK() OVER (ORDER BY count DESC) as rank
@@ -139,24 +137,21 @@ def user_message_details(user_id):
             WHERE user_id = ?
         """, (user_id,))
         rank_data = cursor.fetchone()
-        # If the user has no messages, they won't be in the table, so rank is None
         leaderboard_position = rank_data['rank'] if rank_data else None
 
-        # ✅ CHANGE 2: Fetch weekly data from the 'message_history' table
-        # The query now selects 'week' instead of 'date'.
+        # ✅ CHANGE: Added a condition to only fetch rows where the week format is correct.
+        # This filters out the old daily data by checking the text length.
         cursor.execute("""
             SELECT week, count FROM message_history
-            WHERE user_id = ? ORDER BY week ASC
+            WHERE user_id = ? AND LENGTH(week) = 7
+            ORDER BY week ASC
         """, (user_id,))
         history_rows = cursor.fetchall()
 
         conn.close()
 
-        # Convert the row objects to a list of dictionaries
         message_data = [{"week": row["week"], "count": row["count"]} for row in history_rows]
 
-        # ✅ CHANGE 3: Update the JSON response structure
-        # The response now includes the leaderboard position and uses 'messages_per_week'.
         return jsonify({
             "user_id": user_id,
             "leaderboard_position": leaderboard_position,
@@ -164,10 +159,9 @@ def user_message_details(user_id):
         })
 
     except Exception as e:
-        # It's good practice to log the actual error for debugging
         print(f"Error in user_message_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
-
+    
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return make_response(jsonify({
