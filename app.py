@@ -116,6 +116,34 @@ def api_user(user_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/api/user/<int:user_id>/messages-details")
+@limiter.limit("10 per minute")
+@cache.memoize(timeout=60)
+def user_message_details(user_id):
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_PATH = os.path.join(BASE_DIR, "server_data.db")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT date, count FROM message_history
+            WHERE user_id = ? ORDER BY date ASC
+        """, (user_id,))
+        rows = cursor.fetchall()
+
+        conn.close()
+
+        message_data = [{"date": row[0], "count": row[1]} for row in rows]
+
+        return jsonify({
+            "user_id": user_id,
+            "messages_per_day": message_data
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
