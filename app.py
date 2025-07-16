@@ -128,7 +128,7 @@ def user_message_details(user_id):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # --- QUERY 1: Get the user's CURRENT overall rank (no change here) ---
+        # --- QUERY 1: Get the user's CURRENT overall rank (remains the same) ---
         cursor.execute("""
             SELECT rank FROM (
                 SELECT user_id, RANK() OVER (ORDER BY count DESC) as rank
@@ -139,35 +139,45 @@ def user_message_details(user_id):
         rank_data = cursor.fetchone()
         leaderboard_position = rank_data['rank'] if rank_data else None
 
-        # --- ✅ QUERY 2: New, advanced query for weekly history with ranks ---
-        # This query calculates the rank for the user at the end of each week.
-        # It does this by calculating a running total of messages for ALL users
-        # and then ranking them within each week.
+        # --- ✅ QUERY 2: CORRECTED query for historical weekly leaderboard ranks ---
+        # This version correctly calculates the rank based on the user's total message
+        # count at the end of each week.
         history_query = """
-            WITH weekly_running_totals AS (
-                -- Step 1: For every user, calculate their cumulative message count week by week.
+            WITH AllUserWeeklyTotals AS (
+                -- Step 1: For every user, get their message count for each week they were active.
                 SELECT
                     user_id,
                     week,
-                    SUM(count) OVER (PARTITION BY user_id ORDER BY week) as running_total
+                    count
                 FROM message_history
+                WHERE LENGTH(week) = 7
             ),
-            weekly_ranks AS (
-                -- Step 2: For each week, rank all users based on their cumulative count at that time.
+            AllUserCumulativeTotals AS (
+                -- Step 2: For every user, calculate their running total message count up to each week.
+                -- This creates a "snapshot" of the leaderboard totals at the end of each week.
                 SELECT
                     user_id,
                     week,
-                    RANK() OVER (PARTITION BY week ORDER BY running_total DESC) as rank
-                FROM weekly_running_totals
+                    SUM(count) OVER (PARTITION BY user_id ORDER BY week ASC) as cumulative_messages
+                FROM AllUserWeeklyTotals
+            ),
+            RankedWeekly AS (
+                -- Step 3: Within each week's "snapshot", rank all active users by their cumulative total.
+                SELECT
+                    user_id,
+                    week,
+                    RANK() OVER (PARTITION BY week ORDER BY cumulative_messages DESC) as rank_at_end_of_week
+                FROM AllUserCumulativeTotals
             )
-            -- Step 3: Join the weekly ranks back to the user's original weekly message count.
+            -- Step 4: Select the weekly message count and the calculated historical rank
+            -- ONLY for the user we are interested in.
             SELECT
                 mh.week,
                 mh.count,
-                wr.rank
+                rw.rank_at_end_of_week as rank
             FROM message_history mh
-            JOIN weekly_ranks wr ON mh.user_id = wr.user_id AND mh.week = wr.week
-            WHERE mh.user_id = ? AND LENGTH(mh.week) = 7
+            JOIN RankedWeekly rw ON mh.user_id = rw.user_id AND mh.week = rw.week
+            WHERE mh.user_id = ?
             ORDER BY mh.week ASC;
         """
         
@@ -176,7 +186,7 @@ def user_message_details(user_id):
 
         conn.close()
 
-        # ✅ CHANGE: Process the new 'rank' field from the query results.
+        # Process the new 'rank' field from the query results.
         message_data = [
             {"week": row["week"], "count": row["count"], "rank": row["rank"]} 
             for row in history_rows
@@ -184,14 +194,13 @@ def user_message_details(user_id):
 
         return jsonify({
             "user_id": user_id,
-            "leaderboard_position": leaderboard_position,
-            "messages_per_week": message_data
+            "leaderboard_position": leaderboard_position, # Current overall rank
+            "messages_per_week": message_data # List of weekly msgs + historical rank
         })
 
     except Exception as e:
         print(f"Error in user_message_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
-
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
