@@ -12,7 +12,7 @@ CORS(app)
 
 # --- Configuration ---
 # It's recommended to use environment variables for sensitive data like the bot token.
-DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
 
 # Rate limiting: 30 requests per minute per IP
 limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
