@@ -31,7 +31,11 @@ def get_discord_user(user_id):
     }
     
     try:
+        print(f"Fetching Discord user {user_id} using token: {DISCORD_BOT_TOKEN[:10]}...")
+
         response = requests.get(url, headers=headers)
+        print("Status code:", response.status_code)
+        print("Response:", response.text)
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -105,7 +109,6 @@ def api_user(user_id):
 
         response = make_response(jsonify(response_data))
         response.headers["Cache-Control"] = "public, max-age=120, immutable"
-        print("DISCORD_BOT_TOKEN =", DISCORD_BOT_TOKEN)
         return response
 
     except Exception as e:
