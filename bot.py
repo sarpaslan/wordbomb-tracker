@@ -181,7 +181,58 @@ async def on_ready():
             )
         """)
 
+        # --- NEW: Table for tracking active voice sessions ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_voice_sessions (
+                user_id INTEGER PRIMARY KEY,
+                join_time_iso TEXT NOT NULL
+            )
+        """)
+
         await db.commit()
+
+    # --- NEW: Reconcile voice states on startup ---
+    print("[INFO] Reconciling voice states on startup...")
+    startup_time = datetime.utcnow()
+    
+    # Get all users who are actually in a VC right now
+    current_vc_users = set()
+    for guild in bot.guilds:
+        for channel in guild.voice_channels:
+            if channel.id not in EXCLUDED_VC_IDS:
+                for member in channel.members:
+                    if not member.bot:
+                        current_vc_users.add(member.id)
+    
+    # Get all users the DB thinks are in a VC
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute("SELECT user_id, join_time_iso FROM active_voice_sessions")
+        db_sessions = await cursor.fetchall()
+
+        for user_id, join_time_iso in db_sessions:
+            join_time = datetime.fromisoformat(join_time_iso)
+            
+            # If user in DB is no longer in a VC, they left while bot was offline.
+            if user_id not in current_vc_users:
+                print(f"[RECONCILE] User {user_id} left while bot was offline. Logging time and closing session.")
+                seconds = int((startup_time - join_time).total_seconds())
+                if seconds > 0:
+                    await db.execute("UPDATE voice_time SET seconds = seconds + ? WHERE user_id = ?", (seconds, user_id))
+                await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (user_id,))
+
+        await db.commit()
+
+    # If user is in a VC but not in DB, they joined while bot was offline.
+    async with aiosqlite.connect("server_data.db") as db:
+        for user_id in current_vc_users:
+            async with db.execute("SELECT 1 FROM active_voice_sessions WHERE user_id = ?", (user_id,)) as cursor:
+                if await cursor.fetchone() is None:
+                    print(f"[RECONCILE] User {user_id} joined while bot was offline. Starting new session.")
+                    await db.execute("INSERT INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (user_id, startup_time.isoformat()))
+        await db.commit()
+    
+    print("[SUCCESS] Voice state reconciliation complete.")
+    # --- END NEW ---
 
     # ✅ NEW: Start the background task
     update_weekly_snapshot.start()
@@ -512,29 +563,48 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    
+    # Ignore updates from bots
     if member.bot:
         return
-    
-    now = datetime.datetime.utcnow()
 
+    # Use the 'from datetime import datetime' for consistency with your code
+    now = datetime.utcnow()
+
+    # --- HANDLING LEAVE or MOVE ---
+    # This block executes if the user was in a valid channel before the update.
     if before.channel and before.channel.id not in EXCLUDED_VC_IDS:
-        key = (member.guild.id, member.id)
-        join_time = voice_states.pop(key, None)
-        if join_time:
-            seconds = int((now - join_time).total_seconds())
-            async with aiosqlite.connect("server_data.db") as db:
-                async with db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (member.id,)) as cursor:
-                    row = await cursor.fetchone()
-                if row:
-                    total = row[0] + seconds
-                    await db.execute("UPDATE voice_time SET seconds = ? WHERE user_id = ?", (total, member.id))
-                else:
-                    await db.execute("INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)", (member.id, seconds))
+        async with aiosqlite.connect("server_data.db") as db:
+            # 1. Find the user's join session in the database.
+            cursor = await db.execute("SELECT join_time_iso FROM active_voice_sessions WHERE user_id = ?", (member.id,))
+            session_row = await cursor.fetchone()
+
+            # If a session exists, calculate the time and delete the session record.
+            if session_row:
+                join_time = datetime.fromisoformat(session_row[0])
+                duration_seconds = int((now - join_time).total_seconds())
+
+                # 2. Add the calculated time to the main `voice_time` table.
+                # This "UPSERT" command updates the record if the user exists, or inserts a new one if they don't.
+                if duration_seconds > 0:
+                    await db.execute("""
+                        INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET seconds = seconds + excluded.seconds
+                    """, (member.id, duration_seconds))
+
+                # 3. Clean up by deleting the temporary session record.
+                await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
                 await db.commit()
 
+    # --- HANDLING JOIN or MOVE ---
+    # This block executes if the user is in a valid channel after the update.
     if after.channel and after.channel.id not in EXCLUDED_VC_IDS:
-        voice_states[(member.guild.id, member.id)] = now
+        async with aiosqlite.connect("server_data.db") as db:
+            # Create a new session record with the current time.
+            # INSERT OR IGNORE is used for safety to prevent errors if a session somehow already exists.
+            # When a user moves VCs, the LEAVE logic runs first, deleting the old session,
+            # and then this JOIN logic runs, creating a new one.
+            await db.execute("INSERT OR IGNORE INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (member.id, now.isoformat()))
+            await db.commit()
 
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
