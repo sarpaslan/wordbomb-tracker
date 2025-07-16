@@ -132,7 +132,6 @@ POINT_LOGS_CHANNEL = None
 
 @bot.event
 async def on_ready():
-
     global POINT_LOGS_CHANNEL
     POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
 
@@ -145,66 +144,29 @@ async def on_ready():
         print(f"Loaded command: {cmd.name}")
     print(f"[DEBUG] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
     async with aiosqlite.connect("server_data.db") as db:
+        # No changes needed to the first set of tables
         await db.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 user_id INTEGER PRIMARY KEY,
                 count INTEGER NOT NULL
             )
         """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS bug_points (
-                user_id INTEGER PRIMARY KEY,
-                count INTEGER NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS idea_points (
-                user_id INTEGER PRIMARY KEY,
-                count INTEGER NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS suggest_points (
-                user_id INTEGER PRIMARY KEY,
-                count INTEGER NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS voice_time (
-                user_id INTEGER PRIMARY KEY,
-                seconds INTEGER NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS bug_pointed_messages (
-                message_id INTEGER PRIMARY KEY
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS idea_pointed_messages (
-                message_id INTEGER PRIMARY KEY
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS suggest_pointed_messages (
-                message_id INTEGER PRIMARY KEY
-            )
-        """)
-        # Candies
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS candies (
-                user_id INTEGER PRIMARY KEY,
-                count INTEGER NOT NULL
-            )
-        """)
+        await db.execute("CREATE TABLE IF NOT EXISTS bug_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db.execute("CREATE TABLE IF NOT EXISTS idea_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db.execute("CREATE TABLE IF NOT EXISTS suggest_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db.execute("CREATE TABLE IF NOT EXISTS voice_time (user_id INTEGER PRIMARY KEY, seconds INTEGER NOT NULL)")
+        await db.execute("CREATE TABLE IF NOT EXISTS bug_pointed_messages (message_id INTEGER PRIMARY KEY)")
+        await db.execute("CREATE TABLE IF NOT EXISTS idea_pointed_messages (message_id INTEGER PRIMARY KEY)")
+        await db.execute("CREATE TABLE IF NOT EXISTS suggest_pointed_messages (message_id INTEGER PRIMARY KEY)")
+        await db.execute("CREATE TABLE IF NOT EXISTS candies (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
 
-
+        # ✅ CHANGE: Modified message_history to store data weekly
         await db.execute("""
             CREATE TABLE IF NOT EXISTS message_history (
                 user_id INTEGER,
-                date TEXT,
+                week TEXT,
                 count INTEGER,
-                PRIMARY KEY (user_id, date)
+                PRIMARY KEY (user_id, week)
             )
         """)
 
@@ -237,13 +199,14 @@ async def on_message(message):
                     new_count = 1
                     await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
 
-                # ✅ Insert or update message count per day
-                today = datetime.utcnow().strftime("%Y-%m-%d")
+                # ✅ CHANGE: Insert or update message count for the current week
+                # This creates a string like "2023-45" (Year-WeekNumber)
+                current_week = datetime.utcnow().strftime("%Y-%W")
                 await db.execute("""
-                    INSERT INTO message_history (user_id, date, count)
+                    INSERT INTO message_history (user_id, week, count)
                     VALUES (?, ?, 1)
-                    ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
-                """, (user_id, today))
+                    ON CONFLICT(user_id, week) DO UPDATE SET count = count + 1
+                """, (user_id, current_week))
 
                 await db.commit()
 

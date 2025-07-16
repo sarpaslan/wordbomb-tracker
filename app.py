@@ -125,25 +125,48 @@ def user_message_details(user_id):
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         DB_PATH = os.path.join(BASE_DIR, "server_data.db")
         conn = sqlite3.connect(DB_PATH)
+        # Use a row factory to get dictionary-like results, which is cleaner
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
+        # ✅ CHANGE 1: Get the user's rank from the main 'messages' leaderboard
+        # This query ranks all users by their total message count and finds the specific user's rank.
         cursor.execute("""
-            SELECT date, count FROM message_history
-            WHERE user_id = ? ORDER BY date ASC
+            SELECT rank FROM (
+                SELECT user_id, RANK() OVER (ORDER BY count DESC) as rank
+                FROM messages
+            )
+            WHERE user_id = ?
         """, (user_id,))
-        rows = cursor.fetchall()
+        rank_data = cursor.fetchone()
+        # If the user has no messages, they won't be in the table, so rank is None
+        leaderboard_position = rank_data['rank'] if rank_data else None
+
+        # ✅ CHANGE 2: Fetch weekly data from the 'message_history' table
+        # The query now selects 'week' instead of 'date'.
+        cursor.execute("""
+            SELECT week, count FROM message_history
+            WHERE user_id = ? ORDER BY week ASC
+        """, (user_id,))
+        history_rows = cursor.fetchall()
 
         conn.close()
 
-        message_data = [{"date": row[0], "count": row[1]} for row in rows]
+        # Convert the row objects to a list of dictionaries
+        message_data = [{"week": row["week"], "count": row["count"]} for row in history_rows]
 
+        # ✅ CHANGE 3: Update the JSON response structure
+        # The response now includes the leaderboard position and uses 'messages_per_week'.
         return jsonify({
             "user_id": user_id,
-            "messages_per_day": message_data
+            "leaderboard_position": leaderboard_position,
+            "messages_per_week": message_data
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # It's good practice to log the actual error for debugging
+        print(f"Error in user_message_details for user {user_id}: {e}")
+        return jsonify({"error": "An internal error occurred."}), 500
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
