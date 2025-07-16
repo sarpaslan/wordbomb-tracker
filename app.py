@@ -105,6 +105,7 @@ def api_user(user_id):
 
         response = make_response(jsonify(response_data))
         response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        print("DISCORD_BOT_TOKEN =", DISCORD_BOT_TOKEN)
         return response
 
     except Exception as e:
