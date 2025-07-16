@@ -13,7 +13,7 @@ from datetime import datetime
 
 # Load token
 load_dotenv()
-token = "MTM5MjM1MTQzNTM3ODY1NTIzMg.GnZle8.EROnDsQZKHaooey59ujC-aJITQ-7t9c4WdClHU"#os.getenv('DISCORD_TOKEN')
+token = os.getenv('DISCORD_TOKEN')
 
 # Logging setup
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
