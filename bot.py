@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import logging
 from dotenv import load_dotenv
 import os
@@ -9,7 +9,7 @@ import datetime
 import time
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Load token
 load_dotenv()
@@ -170,8 +170,76 @@ async def on_ready():
             )
         """)
 
+        # ✅ NEW: Create the table for storing weekly leaderboard snapshots
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_leaderboard_snapshot (
+                week TEXT,
+                user_id INTEGER,
+                rank INTEGER,
+                total_messages INTEGER,
+                PRIMARY KEY (week, user_id)
+            )
+        """)
+
         await db.commit()
 
+    # ✅ NEW: Start the background task
+    update_weekly_snapshot.start()
+
+@tasks.loop(hours=1)
+async def update_weekly_snapshot():
+    """
+    Checks every hour if the previous week's leaderboard has been saved.
+    If not, it calculates and stores a snapshot of the ranks.
+    """
+    # Determine the week string for LAST week
+    today = datetime.utcnow()
+    last_week_date = today - timedelta(days=7)
+    previous_week_str = last_week_date.strftime("%Y-%W")
+
+    async with aiosqlite.connect("server_data.db") as db:
+        # Check if we have already processed this week
+        async with db.execute("SELECT 1 FROM weekly_leaderboard_snapshot WHERE week = ?", (previous_week_str,)) as cursor:
+            if await cursor.fetchone():
+                # print(f"[DEBUG] Snapshot for week {previous_week_str} already exists.")
+                return # We've already done this week, do nothing.
+
+        print(f"[INFO] Generating new leaderboard snapshot for week {previous_week_str}...")
+
+        # This query calculates the final leaderboard as of the end of the specified week
+        snapshot_query = """
+            WITH AllUserCumulativeTotals AS (
+                SELECT
+                    user_id,
+                    SUM(count) as cumulative_messages
+                FROM message_history
+                WHERE week <= ?
+                GROUP BY user_id
+            ),
+            RankedTotals AS (
+                SELECT
+                    user_id,
+                    cumulative_messages,
+                    RANK() OVER (ORDER BY cumulative_messages DESC) as rank
+                FROM AllUserCumulativeTotals
+            )
+            SELECT user_id, rank, cumulative_messages FROM RankedTotals
+        """
+        
+        cursor = await db.execute(snapshot_query, (previous_week_str,))
+        snapshot_data = await cursor.fetchall()
+
+        # Insert the snapshot data into the new table
+        await db.executemany(
+            "INSERT INTO weekly_leaderboard_snapshot (week, user_id, rank, total_messages) VALUES (?, ?, ?, ?)",
+            [(previous_week_str, row[0], row[1], row[2]) for row in snapshot_data]
+        )
+        await db.commit()
+        print(f"[SUCCESS] Saved leaderboard snapshot for week {previous_week_str} with {len(snapshot_data)} users.")
+
+@update_weekly_snapshot.before_loop
+async def before_update_weekly_snapshot():
+    await bot.wait_until_ready() # Wait for the bot to be logged in before starting the loop
 
 @bot.event
 async def on_message(message):
