@@ -9,6 +9,7 @@ import datetime
 import time
 import sqlite3
 import threading
+from datetime import datetime
 
 # Load token
 load_dotenv()
@@ -196,6 +197,17 @@ async def on_ready():
                 count INTEGER NOT NULL
             )
         """)
+
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS message_history (
+                user_id INTEGER,
+                date TEXT,
+                count INTEGER,
+                PRIMARY KEY (user_id, date)
+            )
+        """)
+
         await db.commit()
 
 
@@ -224,6 +236,14 @@ async def on_message(message):
                 else:
                     new_count = 1
                     await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
+
+                # ✅ Insert or update message count per day
+                today = datetime.utcnow().strftime("%Y-%m-%d")
+                await db.execute("""
+                    INSERT INTO message_history (user_id, date, count)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+                """, (user_id, today))
 
                 await db.commit()
 
@@ -259,7 +279,7 @@ async def on_message(message):
                             print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
         else:
             pass
-
+    
     await bot.process_commands(message)
 
 async def assign_roles(member, count, guild):
