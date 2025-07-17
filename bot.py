@@ -489,6 +489,11 @@ async def on_voice_state_update(member, before, after):
                             VALUES (?, ?, ?, ?)
                         """, (member.id, join_time.isoformat(), now.isoformat(), duration_seconds))
 
+                        await db.execute("""
+                            INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)
+                            ON CONFLICT(user_id) DO UPDATE SET seconds = seconds + excluded.seconds
+                        """, (member.id, duration_seconds))
+
                     # 4. Clean up the temporary active session record.
                     await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
                     await db.commit()
