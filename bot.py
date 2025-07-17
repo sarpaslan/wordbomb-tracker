@@ -869,22 +869,43 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
         super().__init__()
         self.bot = bot
         self.approval_channel = approval_channel
-        self.valid_languages = {"en-US", "pt-BR", "tr-TR", "fr-FR", "es-ES", "tl-TL", "de-DE", "it-IT", "id-ID",
-                                "sv-SE", "ru", "ca-CA", "fi", "nl", "mc-MC"}
-        self.valid_difficulties = {"easy", "normal", "hard"}
 
+        # --- NEW: A mapping from user-friendly names to database locale codes ---
+        # This is the core of the new logic. It's case-insensitive.
+        self.language_map = {
+            "english": "en-US",
+            "portuguese": "pt-BR",
+            "turkish": "tr-TR",
+            "french": "fr-FR",
+            "spanish": "es-ES",
+            "tagalog": "tl-TL",
+            "german": "de-DE",
+            "italian": "it-IT",
+            "indonesian": "id-ID",
+            "swedish": "sv-SE",
+            "russian": "ru",
+            "catalan": "ca-CA",
+            "finnish": "fi",
+            "dutch": "nl",
+            "minecraft": "mc-MC"  # Special case as per your list
+        }
+
+        # The old self.valid_languages set is no longer needed.
+        self.valid_difficulties = {"easy", "medium", "hard"}
+
+    # --- UPDATED: The label and placeholder are now more user-friendly ---
     language = TextInput(
-        label="Language / Locale Code",
+        label="Language",
         style=discord.TextStyle.short,
-        placeholder="e.g., en-US, pt-BR, fr-FR...",
+        placeholder="e.g., English, French, Spanish...",
         required=True,
-        max_length=10,
+        max_length=20,  # Increased slightly for longer language names
     )
 
     difficulty = TextInput(
         label="Difficulty",
         style=discord.TextStyle.short,
-        placeholder="easy, normal, or hard",
+        placeholder="easy, medium, or hard",
         required=True,
         max_length=10,
     )
@@ -913,22 +934,28 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
         max_length=300,
     )
 
-    # --- NOTE FIELDS HAVE BEEN REMOVED ---
-
     async def on_submit(self, interaction: discord.Interaction):
-        lang_input = self.language.value.strip()
-        diff_input = self.difficulty.value.lower().strip()
+        # --- UPDATED: This section now translates the user's input ---
 
-        if lang_input not in self.valid_languages:
+        # 1. Get the user's language input and normalize it (lowercase, no extra spaces)
+        user_lang_input = self.language.value.lower().strip()
+
+        # 2. Look up the language in our map to get the correct locale code
+        locale_code = self.language_map.get(user_lang_input)
+
+        # 3. If the language isn't found in the map, send an error and stop.
+        if not locale_code:
             await interaction.response.send_message(
-                f"❌ **Invalid Locale:** Please use a valid code like `en-US`, `pt-BR`, etc.",
+                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language. Please use a name like `English`, `French`, `Spanish`, etc.",
                 ephemeral=True
             )
             return
 
+        # The rest of the validation logic remains the same
+        diff_input = self.difficulty.value.lower().strip()
         if diff_input not in self.valid_difficulties:
             await interaction.response.send_message(
-                f"❌ **Invalid Difficulty:** Please enter `easy`, `normal`, or `hard`.",
+                f"❌ **Invalid Difficulty:** Please enter `easy`, `medium`, or `hard`.",
                 ephemeral=True
             )
             return
@@ -951,14 +978,15 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
             description=f"**Submitted by:** {interaction.user.mention} (`{interaction.user.id}`)",
             color=discord.Color.orange()
         )
-        embed.add_field(name="Locale", value=f"`{lang_input}`", inline=True)
+
+        # --- IMPORTANT: We now use the translated 'locale_code' for the embed ---
+        # The user sees their input ("English"), but the system uses the code ("en-US").
+        embed.add_field(name="Locale", value=f"`{locale_code}`", inline=True)
         embed.add_field(name="Difficulty", value=f"`{diff_input}`", inline=True)
         embed.add_field(name="Question", value=self.question_text.value, inline=False)
         embed.add_field(name="✅ Correct Answer", value=self.correct_answer.value, inline=False)
         embed.add_field(name="❌ Incorrect Answers", value="\n".join(f"- {ans}" for ans in incorrect_answers),
                         inline=False)
-
-        # --- REMOVED THE NOTE FIELDS FROM THE EMBED ---
 
         embed.set_footer(text="Awaiting review from a Language Moderator...")
         await self.approval_channel.send(embed=embed, view=ApprovalView())
@@ -1003,7 +1031,7 @@ async def setup_suggestions(ctx):
         title="❓ Help Create the Trivia Game!",
         description="Have a great trivia question? Click the button below to suggest it!\n\n"
                     "Your question will be reviewed by our Language Moderators. If approved, "
-                    "it will be added to the new game mode for everyone to enjoy.",
+                    "you will be credited and it will be added to the new game mode for everyone to enjoy.",
         color=discord.Color.blue()
     )
 
@@ -1042,7 +1070,7 @@ class ApprovalView(ui.View):
             await interaction.response.send_message(f"Error parsing the embed data: {e}", ephemeral=True)
             return
 
-        difficulty_map = {"easy": 0, "normal": 1, "hard": 2}
+        difficulty_map = {"easy": 0, "medium": 1, "hard": 2}
         difficulty_int = difficulty_map.get(difficulty_str, 1)
 
         all_answers = [correct_answer] + incorrect_answers
