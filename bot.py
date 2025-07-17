@@ -636,43 +636,30 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
         super().__init__()
         self.bot = bot
         self.approval_channel = approval_channel
-
-        # --- NEW: A mapping from user-friendly names to database locale codes ---
-        # This is the core of the new logic. It's case-insensitive.
         self.language_map = {
-            "english": "en-US",
-            "portuguese": "pt-BR",
-            "turkish": "tr-TR",
-            "french": "fr-FR",
-            "spanish": "es-ES",
-            "tagalog": "tl-TL",
-            "german": "de-DE",
-            "italian": "it-IT",
-            "indonesian": "id-ID",
-            "swedish": "sv-SE",
-            "russian": "ru",
-            "catalan": "ca-CA",
-            "finnish": "fi",
-            "dutch": "nl",
-            "minecraft": "mc-MC"  # Special case as per your list
+            "english": "en-US", "portuguese": "pt-BR", "turkish": "tr-TR",
+            "french": "fr-FR", "spanish": "es-ES", "tagalog": "tl-TL",
+            "german": "de-DE", "italian": "it-IT", "indonesian": "id-ID",
+            "swedish": "sv-SE", "russian": "ru", "catalan": "ca-CA",
+            "finnish": "fi", "dutch": "nl", "minecraft": "mc-MC"
         }
 
-        # The old self.valid_languages set is no longer needed.
-        self.valid_difficulties = {"easy", "medium", "hard"}
+        # --- CHANGE #1: Add 'insane' to the list of valid difficulties ---
+        self.valid_difficulties = {"easy", "normal", "hard", "insane"}
 
-    # --- UPDATED: The label and placeholder are now more user-friendly ---
     language = TextInput(
         label="Language",
         style=discord.TextStyle.short,
         placeholder="e.g., English, French, Spanish...",
         required=True,
-        max_length=20,  # Increased slightly for longer language names
+        max_length=20,
     )
 
+    # --- CHANGE #2: Update the placeholder to include 'insane' ---
     difficulty = TextInput(
         label="Difficulty",
         style=discord.TextStyle.short,
-        placeholder="easy, medium, or hard",
+        placeholder="easy, normal, hard, or insane",
         required=True,
         max_length=10,
     )
@@ -702,59 +689,42 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # --- UPDATED: This section now translates the user's input ---
-
-        # 1. Get the user's language input and normalize it (lowercase, no extra spaces)
         user_lang_input = self.language.value.lower().strip()
-
-        # 2. Look up the language in our map to get the correct locale code
         locale_code = self.language_map.get(user_lang_input)
 
-        # 3. If the language isn't found in the map, send an error and stop.
         if not locale_code:
             await interaction.response.send_message(
-                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language. Please use a name like `English`, `French`, `Spanish`, etc.",
-                ephemeral=True
-            )
+                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language.", ephemeral=True)
             return
 
-        # The rest of the validation logic remains the same
         diff_input = self.difficulty.value.lower().strip()
+
+        # --- CHANGE #3: Update the error message to include 'insane' ---
         if diff_input not in self.valid_difficulties:
             await interaction.response.send_message(
-                f"❌ **Invalid Difficulty:** Please enter `easy`, `medium`, or `hard`.",
+                f"❌ **Invalid Difficulty:** Please enter `easy`, `normal`, `hard`, or `insane`.",
                 ephemeral=True
             )
             return
 
         incorrect_answers = [ans.strip() for ans in self.other_answers.value.split(',') if ans.strip()]
         if len(incorrect_answers) != 3:
-            await interaction.response.send_message(
-                "❌ **Error:** Please provide exactly three incorrect answers, separated by a comma.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("❌ **Error:** Please provide exactly three incorrect answers.",
+                                                    ephemeral=True)
             return
 
         await interaction.response.send_message(
-            f"✅ Thank you, {interaction.user.mention}! Your suggestion is submitted for review.",
-            ephemeral=True
-        )
+            f"✅ Thank you, {interaction.user.mention}! Your suggestion is submitted.", ephemeral=True)
 
-        embed = discord.Embed(
-            title=f"New Question Suggestion",
-            description=f"**Submitted by:** {interaction.user.mention} (`{interaction.user.id}`)",
-            color=discord.Color.orange()
-        )
-
-        # --- IMPORTANT: We now use the translated 'locale_code' for the embed ---
-        # The user sees their input ("English"), but the system uses the code ("en-US").
+        embed = discord.Embed(title=f"New Question Suggestion",
+                              description=f"**Submitted by:** {interaction.user.mention} (`{interaction.user.id}`)",
+                              color=discord.Color.orange())
         embed.add_field(name="Locale", value=f"`{locale_code}`", inline=True)
         embed.add_field(name="Difficulty", value=f"`{diff_input}`", inline=True)
         embed.add_field(name="Question", value=self.question_text.value, inline=False)
         embed.add_field(name="✅ Correct Answer", value=self.correct_answer.value, inline=False)
         embed.add_field(name="❌ Incorrect Answers", value="\n".join(f"- {ans}" for ans in incorrect_answers),
                         inline=False)
-
         embed.set_footer(text="Awaiting review from a Language Moderator...")
         await self.approval_channel.send(embed=embed, view=ApprovalView())
 
@@ -814,47 +784,35 @@ class ApprovalView(ui.View):
     @ui.button(label='Approve', style=discord.ButtonStyle.green, custom_id='question_approve')
     async def approve_button(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
-            await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
-                                                    ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to approve suggestions.", ephemeral=True)
             return
 
         original_embed = interaction.message.embeds[0]
 
         try:
             locale = next(field.value for field in original_embed.fields if field.name == "Locale").strip('`')
-            difficulty_str = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip(
-                '`')
+            difficulty_str = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip('`')
             question = next(field.value for field in original_embed.fields if field.name == "Question")
             correct_answer = next(field.value for field in original_embed.fields if field.name == "✅ Correct Answer")
-
-            incorrect_answers_str = next(
-                field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
+            incorrect_answers_str = next(field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
             incorrect_answers = [line.lstrip('- ') for line in incorrect_answers_str.split('\n')]
-
             submitter_id = original_embed.description.split('`')[1]
-
         except (StopIteration, IndexError) as e:
             await interaction.response.send_message(f"Error parsing the embed data: {e}", ephemeral=True)
             return
 
-        difficulty_map = {"easy": 0, "medium": 1, "hard": 2}
-        difficulty_int = difficulty_map.get(difficulty_str, 1)
+        # --- CHANGE #4: Add 'insane' to the difficulty map with a new index ---
+        # easy: 0, normal: 1, hard: 2, insane: 3
+        difficulty_map = {"easy": 0, "normal": 1, "hard": 2, "insane": 3}
+        difficulty_int = difficulty_map.get(difficulty_str, 1) # Default to 1 (normal) if not found
 
         all_answers = [correct_answer] + incorrect_answers
         right_answer_index = all_answers.index(correct_answer)
 
-        # --- UPDATED: 'nf' and 'ns' are now saved as empty strings ---
         question_document = {
-            "q": question,
-            "a": all_answers,
-            "r": right_answer_index,
-            "nf": "",  # Fail note is now an empty placeholder
-            "ns": "",  # Success note is now an empty placeholder
-            "u": submitter_id,
-            "l": locale,
-            "d": difficulty_int
+            "q": question, "a": all_answers, "r": right_answer_index,
+            "nf": "", "ns": "", "u": submitter_id, "l": locale, "d": difficulty_int
         }
-
         await questions_collection.insert_one(question_document)
 
         new_embed = original_embed
@@ -865,19 +823,16 @@ class ApprovalView(ui.View):
         self.decline_button.disabled = True
         await interaction.response.edit_message(embed=new_embed, view=self)
 
-    # --- The decline_button method does not need to be changed ---
     @ui.button(label='Decline', style=discord.ButtonStyle.red, custom_id='question_decline')
     async def decline_button(self, interaction: discord.Interaction, button: ui.Button):
+        # ... (This method does not need to be changed) ...
         if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
-            await interaction.response.send_message("❌ You do not have permission to decline suggestions.",
-                                                    ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to decline suggestions.", ephemeral=True)
             return
-
         original_embed = interaction.message.embeds[0]
         new_embed = original_embed
         new_embed.color = discord.Color.red()
         new_embed.set_footer(text=f"❌ Declined by {interaction.user.display_name}")
-
         self.approve_button.disabled = True
         self.decline_button.disabled = True
         await interaction.response.edit_message(embed=new_embed, view=self)
