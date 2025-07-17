@@ -192,10 +192,11 @@ def user_voice_time_details(user_id):
         conn.row_factory = sqlite3.Row  # Allows accessing columns by name
         cursor = conn.cursor()
 
-        # --- Query 1: Find the most active day of the week ---
-        # This groups all voice time by day, sums it up, and returns the top day.
-        most_active_day_query = """
+        # --- ✅ MODIFIED QUERY: Find and rank all active days ---
+        # We now SELECT the SUM of seconds and remove the LIMIT 1 clause.
+        daily_activity_query = """
             SELECT
+                SUM(duration_seconds) as total_seconds,
                 CASE strftime('%w', start_timestamp)
                     WHEN '0' THEN 'Sunday'
                     WHEN '1' THEN 'Monday'
@@ -204,22 +205,23 @@ def user_voice_time_details(user_id):
                     WHEN '4' THEN 'Thursday'
                     WHEN '5' THEN 'Friday'
                     WHEN '6' THEN 'Saturday'
-                END as day_name
+                END as day
             FROM
                 voice_sessions
             WHERE
                 user_id = ?
             GROUP BY
-                day_name
+                day
             ORDER BY
-                SUM(duration_seconds) DESC
-            LIMIT 1;
+                total_seconds DESC;
         """
-        cursor.execute(most_active_day_query, (user_id,))
-        active_day_row = cursor.fetchone()
-        most_active_day = active_day_row['day_name'] if active_day_row else None
+        cursor.execute(daily_activity_query, (user_id,))
+        # ✅ We now use fetchall() to get all the rows, not just one.
+        daily_activity_rows = cursor.fetchall()
+        # Convert the list of database rows into a clean list of dictionaries
+        daily_activity_summary = [dict(row) for row in daily_activity_rows]
 
-        # --- Query 2: Find the single longest voice session ---
+        # --- This query for the longest session remains unchanged ---
         longest_session_query = """
             SELECT
                 duration_seconds,
@@ -242,10 +244,10 @@ def user_voice_time_details(user_id):
 
         conn.close()
 
-        # --- Construct the final response ---
+        # --- ✅ Construct the new final response ---
         response_data = {
             "user_id": user_id,
-            "most_active_day": most_active_day,
+            "daily_activity_summary": daily_activity_summary,
             "longest_session": longest_session_data
         }
 
