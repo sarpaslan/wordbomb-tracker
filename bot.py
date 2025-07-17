@@ -23,10 +23,9 @@ MONGO_URI = os.getenv('MONGO_URI')
 APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
 
 # --- MongoDB Setup ---
-# This sets up the connection to your database
-client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client.questions # You can name your database anything
-questions_collection = db.questions # This is where the approved questions will be stored
+client = None
+db = None
+questions_collection = None
 
 # Logging setup
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
@@ -144,6 +143,25 @@ POINT_LOGS_CHANNEL = None
 
 @bot.event
 async def on_ready():
+    # Make the variables accessible globally
+    global client, db, questions_collection
+
+    # --- NEW: Initialize MongoDB client inside the running loop ---
+    print("[INFO] Initializing MongoDB connection...")
+    try:
+        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+        db = client.wordbomb_game
+        questions_collection = db.questions
+        # The ismaster command is a lightweight way to force the
+        # client to connect and confirm the connection is active.
+        await client.admin.command('ismaster')
+        print("[SUCCESS] MongoDB connection established.")
+    except Exception as e:
+        print(f"[ERROR] Failed to connect to MongoDB: {e}")
+        # You might want to shut down the bot if the DB connection fails
+        # await bot.close()
+        return
+
     global POINT_LOGS_CHANNEL
     POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
 
