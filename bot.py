@@ -151,7 +151,7 @@ async def on_ready():
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         db = client.questions
-        questions_collection = db.questions
+        questions_collection = db.approved
         # The ismaster command is a lightweight way to force the
         # client to connect and confirm the connection is active.
         await client.admin.command('ismaster')
