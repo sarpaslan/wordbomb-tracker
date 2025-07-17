@@ -1,5 +1,7 @@
 import discord
+from discord import app_commands, ui
 from discord.ext import commands, tasks
+from discord.ui import Modal, TextInput, Select
 import logging
 from dotenv import load_dotenv
 import os
@@ -7,13 +9,24 @@ import aiosqlite
 import random
 import datetime
 import time
-import sqlite3
-import threading
 from datetime import datetime, timedelta
+import motor.motor_asyncio
 
 # Load token
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+
+# --- New Constants ---
+# Ask Hector for this connection string and put it in your .env file
+MONGO_URI = os.getenv('MONGO_URI')
+# ID of the private channel where suggestions will be sent for approval
+APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
+
+# --- MongoDB Setup ---
+# This sets up the connection to your database
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+db = client.questions # You can name your database anything
+questions_collection = db.questions # This is where the approved questions will be stored
 
 # Logging setup
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
@@ -60,7 +73,7 @@ LANGUAGE_MOD_IDS = {
     448419862767730703,  # kisaragi (tl-TL), admin, legend false
     918908049194889236,  # ayberk (tr-TR), admin, legend false
     945440695924162690,  # finesse (ru), admin, legend false
-#849827666064048178, #test
+    #849827666064048178, #test
 }
 
 LANGUAGE_CHANNEL_IDS = {
@@ -99,7 +112,6 @@ EXCLUDED_CHANNEL_IDS = {
     1328176869572612288, # normal commands channel
     1349650156001431592, # what channel
 }
-
 voice_states = {}
 
 EXCLUDED_VC_IDS = {1390402088483422289, 1390454038142914720}
@@ -236,6 +248,11 @@ async def on_ready():
 
     # ✅ NEW: Start the background task
     update_weekly_snapshot.start()
+
+    bot.add_view(ApprovalView())
+    bot.add_view(SuggestionStarterView())
+
+    print("[SUCCESS] Bot is ready and persistent views are registered.")
 
 @tasks.loop(hours=1)
 async def update_weekly_snapshot():
@@ -827,6 +844,230 @@ async def give_time(ctx, member: discord.Member, seconds: int):
     minutes = (total % 3600) // 60
     sec = total % 60
     await ctx.send(f"✅ Added `{seconds}` seconds to {member.mention}. New total: **{hours}h {minutes}m {sec}s**")
+
+# Trivia Game
+class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
+    def __init__(self, bot, approval_channel):
+        super().__init__()
+        self.bot = bot
+        self.approval_channel = approval_channel
+        self.valid_languages = {"en-US", "pt-BR", "tr-TR", "fr-FR", "es-ES", "tl-TL", "de-DE", "it-IT", "id-ID",
+                                "sv-SE", "ru", "ca-CA", "fi", "nl", "mc-MC"}
+        self.valid_difficulties = {"easy", "normal", "hard"}
+
+    language = TextInput(
+        label="Language / Locale Code",
+        style=discord.TextStyle.short,
+        placeholder="e.g., en-US, pt-BR, fr-FR...",
+        required=True,
+        max_length=10,
+    )
+
+    difficulty = TextInput(
+        label="Difficulty",
+        style=discord.TextStyle.short,
+        placeholder="easy, normal, or hard",
+        required=True,
+        max_length=10,
+    )
+
+    question_text = TextInput(
+        label='Question',
+        style=discord.TextStyle.paragraph,
+        placeholder='e.g., What is the capital of France?',
+        required=True,
+        max_length=256,
+    )
+
+    correct_answer = TextInput(
+        label='Correct Answer',
+        style=discord.TextStyle.short,
+        placeholder='e.g., Paris',
+        required=True,
+        max_length=100,
+    )
+
+    other_answers = TextInput(
+        label='Three Incorrect Answers (separate with comma)',
+        style=discord.TextStyle.paragraph,
+        placeholder='e.g., London, Berlin, Rome',
+        required=True,
+        max_length=300,
+    )
+
+    # --- NOTE FIELDS HAVE BEEN REMOVED ---
+
+    async def on_submit(self, interaction: discord.Interaction):
+        lang_input = self.language.value.strip()
+        diff_input = self.difficulty.value.lower().strip()
+
+        if lang_input not in self.valid_languages:
+            await interaction.response.send_message(
+                f"❌ **Invalid Locale:** Please use a valid code like `en-US`, `pt-BR`, etc.",
+                ephemeral=True
+            )
+            return
+
+        if diff_input not in self.valid_difficulties:
+            await interaction.response.send_message(
+                f"❌ **Invalid Difficulty:** Please enter `easy`, `normal`, or `hard`.",
+                ephemeral=True
+            )
+            return
+
+        incorrect_answers = [ans.strip() for ans in self.other_answers.value.split(',') if ans.strip()]
+        if len(incorrect_answers) != 3:
+            await interaction.response.send_message(
+                "❌ **Error:** Please provide exactly three incorrect answers, separated by a comma.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ Thank you, {interaction.user.mention}! Your suggestion is submitted for review.",
+            ephemeral=True
+        )
+
+        embed = discord.Embed(
+            title=f"New Question Suggestion",
+            description=f"**Submitted by:** {interaction.user.mention} (`{interaction.user.id}`)",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Locale", value=f"`{lang_input}`", inline=True)
+        embed.add_field(name="Difficulty", value=f"`{diff_input}`", inline=True)
+        embed.add_field(name="Question", value=self.question_text.value, inline=False)
+        embed.add_field(name="✅ Correct Answer", value=self.correct_answer.value, inline=False)
+        embed.add_field(name="❌ Incorrect Answers", value="\n".join(f"- {ans}" for ans in incorrect_answers),
+                        inline=False)
+
+        # --- REMOVED THE NOTE FIELDS FROM THE EMBED ---
+
+        embed.set_footer(text="Awaiting review from a Language Moderator...")
+        await self.approval_channel.send(embed=embed, view=ApprovalView())
+
+# ADD THIS NEW VIEW CLASS
+class SuggestionStarterView(ui.View):
+    def __init__(self):
+        # timeout=None makes the button persistent
+        super().__init__(timeout=None)
+
+    @ui.button(label='Suggest a Question', style=discord.ButtonStyle.blurple, custom_id='start_suggestion')
+    async def start_suggestion_button(self, interaction: discord.Interaction, button: ui.Button):
+        # This is the code that runs when a user clicks the button
+        approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
+        if not approval_channel:
+            # Send a user-facing error if the admin setup is wrong
+            await interaction.response.send_message("Error: Approval channel not configured. Please contact an admin.",
+                                                    ephemeral=True)
+            return
+
+        # This opens the pop-up modal for the user who clicked
+        await interaction.response.send_modal(QuestionSuggestionModal(bot, approval_channel))
+
+
+# ADD THIS NEW ADMIN COMMAND
+@bot.command(name="setup_suggestions")
+async def setup_suggestions(ctx):
+
+    if ctx.author.id != 849827666064048178:  # Replace with your actual Discord user ID
+        await ctx.send("You don't have permission to use this command.")
+        return
+
+    """Sends the persistent message with the 'Suggest a Question' button."""
+    channel_id = 1395207538445910047  # The channel where the button will live
+    target_channel = bot.get_channel(channel_id)
+
+    if not target_channel:
+        await ctx.send("Error: Could not find the target channel.")
+        return
+
+    embed = discord.Embed(
+        title="❓ Help Create the Trivia Game!",
+        description="Have a great trivia question? Click the button below to suggest it!\n\n"
+                    "Your question will be reviewed by our Language Moderators. If approved, "
+                    "it will be added to the new game mode for everyone to enjoy.",
+        color=discord.Color.blue()
+    )
+
+    # Send the message to the channel with the button view
+    await target_channel.send(embed=embed, view=SuggestionStarterView())
+    await ctx.send(f"✅ Suggestion button message has been sent to {target_channel.mention}.")
+
+
+class ApprovalView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label='Approve', style=discord.ButtonStyle.green, custom_id='question_approve')
+    async def approve_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
+            await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
+                                                    ephemeral=True)
+            return
+
+        original_embed = interaction.message.embeds[0]
+
+        try:
+            locale = next(field.value for field in original_embed.fields if field.name == "Locale").strip('`')
+            difficulty_str = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip(
+                '`')
+            question = next(field.value for field in original_embed.fields if field.name == "Question")
+            correct_answer = next(field.value for field in original_embed.fields if field.name == "✅ Correct Answer")
+
+            incorrect_answers_str = next(
+                field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
+            incorrect_answers = [line.lstrip('- ') for line in incorrect_answers_str.split('\n')]
+
+            submitter_id = original_embed.description.split('`')[1]
+
+        except (StopIteration, IndexError) as e:
+            await interaction.response.send_message(f"Error parsing the embed data: {e}", ephemeral=True)
+            return
+
+        difficulty_map = {"easy": 0, "normal": 1, "hard": 2}
+        difficulty_int = difficulty_map.get(difficulty_str, 1)
+
+        all_answers = [correct_answer] + incorrect_answers
+        right_answer_index = all_answers.index(correct_answer)
+
+        # --- UPDATED: 'nf' and 'ns' are now saved as empty strings ---
+        question_document = {
+            "q": question,
+            "a": all_answers,
+            "r": right_answer_index,
+            "nf": "",  # Fail note is now an empty placeholder
+            "ns": "",  # Success note is now an empty placeholder
+            "u": submitter_id,
+            "l": locale,
+            "d": difficulty_int
+        }
+
+        await questions_collection.insert_one(question_document)
+
+        new_embed = original_embed
+        new_embed.color = discord.Color.green()
+        new_embed.set_footer(text=f"✅ Approved by {interaction.user.display_name}")
+
+        self.approve_button.disabled = True
+        self.decline_button.disabled = True
+        await interaction.response.edit_message(embed=new_embed, view=self)
+
+    # --- The decline_button method does not need to be changed ---
+    @ui.button(label='Decline', style=discord.ButtonStyle.red, custom_id='question_decline')
+    async def decline_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
+            await interaction.response.send_message("❌ You do not have permission to decline suggestions.",
+                                                    ephemeral=True)
+            return
+
+        original_embed = interaction.message.embeds[0]
+        new_embed = original_embed
+        new_embed.color = discord.Color.red()
+        new_embed.set_footer(text=f"❌ Declined by {interaction.user.display_name}")
+
+        self.approve_button.disabled = True
+        self.decline_button.disabled = True
+        await interaction.response.edit_message(embed=new_embed, view=self)
 
 @bot.event
 async def on_command_error(ctx, error):
