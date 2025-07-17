@@ -913,7 +913,8 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     question_text = TextInput(
         label='Question',
         style=discord.TextStyle.paragraph,
-        placeholder='e.g., What is the capital of France?',
+        placeholder="Questions about definitions, word origins, collective nouns, etc.\n"
+                    "e.g., A group of crows is called a what?",
         required=True,
         max_length=256,
     )
@@ -921,7 +922,7 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     correct_answer = TextInput(
         label='Correct Answer',
         style=discord.TextStyle.short,
-        placeholder='e.g., Paris',
+        placeholder='e.g., Murder',
         required=True,
         max_length=100,
     )
@@ -929,7 +930,7 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     other_answers = TextInput(
         label='Three Incorrect Answers (separate with comma)',
         style=discord.TextStyle.paragraph,
-        placeholder='e.g., London, Berlin, Rome',
+        placeholder='e.g., Parliament, Conspiracy, Gaggle',
         required=True,
         max_length=300,
     )
