@@ -677,8 +677,6 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
             "swedish": "sv-SE", "russian": "ru", "catalan": "ca-CA",
             "finnish": "fi", "dutch": "nl", "minecraft": "mc-MC"
         }
-
-        # --- CHANGE #1: Add 'insane' to the list of valid difficulties ---
         self.valid_difficulties = {"easy", "normal", "hard", "insane"}
 
     language = TextInput(
@@ -689,7 +687,6 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
         max_length=20,
     )
 
-    # --- CHANGE #2: Update the placeholder to include 'insane' ---
     difficulty = TextInput(
         label="Difficulty",
         style=discord.TextStyle.short,
@@ -723,17 +720,25 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        user_lang_input = self.language.value.lower().strip()
-        locale_code = self.language_map.get(user_lang_input)
+        # --- THIS IS THE CORRECTED VALIDATION LOGIC ---
 
-        if not locale_code:
+        # 1. Normalize the user's language input (lowercase, no extra spaces)
+        user_lang_input = self.language.value.lower().strip()
+
+        # 2. Check if the user's EXACT normalized input is a key in our map.
+        # This prevents partial matches like 'englishhhh'.
+        if user_lang_input not in self.language_map:
             await interaction.response.send_message(
-                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language.", ephemeral=True)
+                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language. Please use an exact name like `English`, `French`, `Spanish`, etc.",
+                ephemeral=True
+            )
             return
 
-        diff_input = self.difficulty.value.lower().strip()
+        # 3. If it's a valid key, get the corresponding locale code.
+        locale_code = self.language_map[user_lang_input]
 
-        # --- CHANGE #3: Update the error message to include 'insane' ---
+        # The rest of the function remains the same.
+        diff_input = self.difficulty.value.lower().strip()
         if diff_input not in self.valid_difficulties:
             await interaction.response.send_message(
                 f"❌ **Invalid Difficulty:** Please enter `easy`, `normal`, `hard`, or `insane`.",
@@ -762,7 +767,77 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
         embed.set_footer(text="Awaiting review from a Language Moderator...")
         await self.approval_channel.send(embed=embed, view=ApprovalView())
 
-# ADD THIS NEW VIEW CLASS
+
+class QuestionEditModal(Modal, title='Edit Question Suggestion'):
+    def __init__(self, data: dict):
+        super().__init__()
+        self.language = TextInput(label="Language", default=data.get('language'), required=True, max_length=20)
+        self.difficulty = TextInput(label="Difficulty", default=data.get('difficulty'), required=True, max_length=10)
+        self.question_text = TextInput(label='Question', default=data.get('question'),
+                                       style=discord.TextStyle.paragraph, required=True, max_length=256)
+        self.correct_answer = TextInput(label='Correct Answer', default=data.get('correct_answer'), required=True,
+                                        max_length=100)
+        self.other_answers = TextInput(label='Three Incorrect Answers (comma-separated)',
+                                       default=data.get('other_answers'), style=discord.TextStyle.paragraph,
+                                       required=True, max_length=300)
+        self.add_item(self.language)
+        self.add_item(self.difficulty)
+        self.add_item(self.question_text)
+        self.add_item(self.correct_answer)
+        self.add_item(self.other_answers)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # --- THIS IS THE CORRECTED VALIDATION LOGIC FOR THE EDIT MODAL ---
+        language_map = {
+            "english": "en-US", "portuguese": "pt-BR", "turkish": "tr-TR",
+            "french": "fr-FR", "spanish": "es-ES", "tagalog": "tl-TL",
+            "german": "de-DE", "italian": "it-IT", "indonesian": "id-ID",
+            "swedish": "sv-SE", "russian": "ru", "catalan": "ca-CA",
+            "finnish": "fi", "dutch": "nl", "minecraft": "mc-MC"
+        }
+        valid_difficulties = {"easy", "normal", "hard", "insane"}
+
+        # 1. Normalize the moderator's language input
+        user_lang_input = self.language.value.lower().strip()
+
+        # 2. Check for an EXACT match in the language map keys.
+        if user_lang_input not in language_map:
+            return await interaction.response.send_message(
+                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language. Please use an exact name like `English`.",
+                ephemeral=True
+            )
+
+        # 3. Get the correct locale code from the map.
+        locale_code = language_map[user_lang_input]
+
+        # The rest of the validation and embed creation
+        diff_input = self.difficulty.value.lower().strip()
+        if diff_input not in valid_difficulties:
+            return await interaction.response.send_message(f"❌ Invalid Difficulty: `{diff_input}`", ephemeral=True)
+
+        incorrect_answers = [ans.strip() for ans in self.other_answers.value.split(',') if ans.strip()]
+        if len(incorrect_answers) != 3:
+            return await interaction.response.send_message("❌ Error: You must provide exactly three incorrect answers.",
+                                                           ephemeral=True)
+
+        original_embed = interaction.message.embeds[0]
+        new_embed = discord.Embed(
+            title=original_embed.title,
+            description=original_embed.description,
+            color=original_embed.color
+        )
+        # Use the validated locale_code for the updated embed
+        new_embed.add_field(name="Locale", value=f"`{locale_code}`", inline=True)
+        new_embed.add_field(name="Difficulty", value=f"`{diff_input}`", inline=True)
+        new_embed.add_field(name="Question", value=self.question_text.value, inline=False)
+        new_embed.add_field(name="✅ Correct Answer", value=self.correct_answer.value, inline=False)
+        new_embed.add_field(name="❌ Incorrect Answers", value="\n".join(f"- {ans}" for ans in incorrect_answers),
+                            inline=False)
+        new_embed.set_footer(text=f"Last edited by {interaction.user.display_name}")
+
+        await interaction.response.send_message("✅ Suggestion has been updated!", ephemeral=True)
+        await interaction.message.edit(embed=new_embed)
+
 class SuggestionStarterView(ui.View):
     def __init__(self):
         # timeout=None makes the button persistent
@@ -815,79 +890,117 @@ class ApprovalView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+    # The Approve button logic does NOT need to change
     @ui.button(label='Approve', style=discord.ButtonStyle.green, custom_id='question_approve')
     async def approve_button(self, interaction: discord.Interaction, button: ui.Button):
+        # ... (all your existing approve_button code remains here) ...
         if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
-            await interaction.response.send_message("❌ You do not have permission to approve suggestions.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
+                                                    ephemeral=True)
             return
-
         original_embed = interaction.message.embeds[0]
-
         try:
             locale = next(field.value for field in original_embed.fields if field.name == "Locale").strip('`')
-            difficulty_str = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip('`')
+            difficulty_str = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip(
+                '`')
             question = next(field.value for field in original_embed.fields if field.name == "Question")
             correct_answer = next(field.value for field in original_embed.fields if field.name == "✅ Correct Answer")
-            incorrect_answers_str = next(field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
+            incorrect_answers_str = next(
+                field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
             incorrect_answers = [line.lstrip('- ') for line in incorrect_answers_str.split('\n')]
             submitter_id = original_embed.description.split('`')[1]
         except (StopIteration, IndexError) as e:
             await interaction.response.send_message(f"Error parsing the embed data: {e}", ephemeral=True)
             return
-
-        # --- CHANGE #4: Add 'insane' to the difficulty map with a new index ---
-        # easy: 0, normal: 1, hard: 2, insane: 3
         difficulty_map = {"easy": 0, "normal": 1, "hard": 2, "insane": 3}
-        difficulty_int = difficulty_map.get(difficulty_str, 1) # Default to 1 (normal) if not found
-
+        difficulty_int = difficulty_map.get(difficulty_str, 1)
         all_answers = [correct_answer] + incorrect_answers
         right_answer_index = all_answers.index(correct_answer)
-
         question_document = {
             "q": question, "a": all_answers, "r": right_answer_index,
             "nf": "", "ns": "", "u": submitter_id, "l": locale, "d": difficulty_int
         }
         await questions_collection.insert_one(question_document)
-
         new_embed = original_embed
         new_embed.color = discord.Color.green()
         new_embed.set_footer(text=f"✅ Approved by {interaction.user.display_name}")
-
         self.approve_button.disabled = True
         self.decline_button.disabled = True
+        self.edit_button.disabled = True  # Also disable the edit button
         await interaction.response.edit_message(embed=new_embed, view=self)
 
+    # --- THIS IS THE NEW BUTTON'S LOGIC ---
+    @ui.button(label='Edit', style=discord.ButtonStyle.secondary, custom_id='question_edit')
+    async def edit_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
+            return await interaction.response.send_message("❌ You do not have permission to edit suggestions.",
+                                                           ephemeral=True)
+
+        # 1. Parse the data from the current embed on the message
+        original_embed = interaction.message.embeds[0]
+        try:
+            # We need to find the user-friendly language name from the locale code for the form
+            language_map = {
+                "en-US": "English", "pt-BR": "Portuguese", "tr-TR": "Turkish", "fr-FR": "French",
+                "es-ES": "Spanish", "tl-TL": "Tagalog", "de-DE": "German", "it-IT": "Italian",
+                "id-ID": "Indonesian", "sv-SE": "Swedish", "ru": "Russian", "ca-CA": "Catalan",
+                "fi": "Finnish", "nl": "Dutch", "mc-MC": "Minecraft"
+            }
+            locale = next(field.value for field in original_embed.fields if field.name == "Locale").strip('`')
+
+            # Find the user-friendly name, or use the code as a fallback
+            language_name = next((name for name, code in language_map.items() if code == locale), locale)
+
+            difficulty = next(field.value for field in original_embed.fields if field.name == "Difficulty").strip('`')
+            question = next(field.value for field in original_embed.fields if field.name == "Question")
+            correct_answer = next(field.value for field in original_embed.fields if field.name == "✅ Correct Answer")
+
+            # Convert the list of incorrect answers back into a comma-separated string for the text field
+            incorrect_answers_str = next(
+                field.value for field in original_embed.fields if field.name == "❌ Incorrect Answers")
+            incorrect_answers_list = [line.lstrip('- ') for line in incorrect_answers_str.split('\n')]
+            incorrect_answers_for_modal = ", ".join(incorrect_answers_list)
+
+            # 2. Store the parsed data in a dictionary
+            data_to_edit = {
+                'language': language_name.capitalize(),
+                'difficulty': difficulty,
+                'question': question,
+                'correct_answer': correct_answer,
+                'other_answers': incorrect_answers_for_modal
+            }
+
+            # 3. Create and send the pre-populated modal
+            await interaction.response.send_modal(QuestionEditModal(data=data_to_edit))
+
+        except (StopIteration, IndexError) as e:
+            await interaction.response.send_message(f"Error parsing embed to edit: {e}", ephemeral=True)
+
+    # The Decline button logic also needs to disable the new edit button
     @ui.button(label='Decline', style=discord.ButtonStyle.red, custom_id='question_decline')
     async def decline_button(self, interaction: discord.Interaction, button: ui.Button):
-        # ... (This method does not need to be changed) ...
+        # ... (your existing decline_button code) ...
         if interaction.user.id not in LANGUAGE_MOD_IDS and interaction.user.id != 849827666064048178:
-            await interaction.response.send_message("❌ You do not have permission to decline suggestions.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to decline suggestions.",
+                                                    ephemeral=True)
             return
         original_embed = interaction.message.embeds[0]
-
         if rejected_questions_collection is not None:
             try:
-                # Extract the same data as the approve button
                 submitter_id = original_embed.description.split('`')[1]
                 question = next(field.value for field in original_embed.fields if field.name == "Question")
-
-                rejected_document = {
-                    "q": question,
-                    "u": submitter_id,
-                    "declined_by": interaction.user.id,
-                    "declined_at": datetime.utcnow()
-                }
+                rejected_document = {"q": question, "u": submitter_id, "declined_by": interaction.user.id,
+                                     "declined_at": datetime.utcnow()}
                 await rejected_questions_collection.insert_one(rejected_document)
             except Exception as e:
                 print(f"[ERROR] Failed to save rejected question: {e}")
-
         new_embed = original_embed
         new_embed.color = discord.Color.red()
         new_embed.set_footer(text=f"❌ Declined by {interaction.user.display_name}")
         self.approve_button.disabled = True
         self.decline_button.disabled = True
+        self.edit_button.disabled = True  # Also disable the edit button
         await interaction.response.edit_message(embed=new_embed, view=self)
-
 
 @bot.command(name="wipe_suggestions_data")
 async def wipe_suggestions_data(ctx):
