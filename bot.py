@@ -150,7 +150,7 @@ async def on_ready():
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-        db = client.wordbomb_game
+        db = client.questions
         questions_collection = db.questions
         # The ismaster command is a lightweight way to force the
         # client to connect and confirm the connection is active.
