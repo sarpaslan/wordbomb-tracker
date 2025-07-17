@@ -141,91 +141,54 @@ OTHER_BOTS_COMMANDS = {
 
 POINT_LOGS_CHANNEL = None
 
+
 @bot.event
 async def on_ready():
-    # Make the variables accessible globally
     global client, db, questions_collection
-
-    # --- NEW: Initialize MongoDB client inside the running loop ---
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         db = client.questions
         questions_collection = db.approved
-        # The ismaster command is a lightweight way to force the
-        # client to connect and confirm the connection is active.
         await client.admin.command('ismaster')
-        print("[SUCCESS] MongoDB connection established.")
+        print("[SUCCESS] MongoDB connection established and saving to 'questions.approved'.")
     except Exception as e:
         print(f"[ERROR] Failed to connect to MongoDB: {e}")
-        # You might want to shut down the bot if the DB connection fails
-        # await bot.close()
         return
 
     global POINT_LOGS_CHANNEL
     POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
-
     if POINT_LOGS_CHANNEL:
         print(f"[DEBUG] POINT_LOGS_CHANNEL loaded: {POINT_LOGS_CHANNEL.name} ({POINT_LOGS_CHANNEL.id})")
     else:
         print("[ERROR] POINT_LOGS_CHANNEL could not be loaded.")
 
-    for cmd in bot.commands:
-        print(f"Loaded command: {cmd.name}")
     print(f"[DEBUG] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
-    async with aiosqlite.connect("server_data.db") as db:
-        # No changes needed to the first set of tables
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                user_id INTEGER PRIMARY KEY,
-                count INTEGER NOT NULL
-            )
-        """)
-        await db.execute("CREATE TABLE IF NOT EXISTS bug_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        await db.execute("CREATE TABLE IF NOT EXISTS idea_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        await db.execute("CREATE TABLE IF NOT EXISTS suggest_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        await db.execute("CREATE TABLE IF NOT EXISTS voice_time (user_id INTEGER PRIMARY KEY, seconds INTEGER NOT NULL)")
-        await db.execute("CREATE TABLE IF NOT EXISTS bug_pointed_messages (message_id INTEGER PRIMARY KEY)")
-        await db.execute("CREATE TABLE IF NOT EXISTS idea_pointed_messages (message_id INTEGER PRIMARY KEY)")
-        await db.execute("CREATE TABLE IF NOT EXISTS suggest_pointed_messages (message_id INTEGER PRIMARY KEY)")
-        await db.execute("CREATE TABLE IF NOT EXISTS candies (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
 
-        # ✅ CHANGE: Modified message_history to store data weekly
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS message_history (
-                user_id INTEGER,
-                week TEXT,
-                count INTEGER,
-                PRIMARY KEY (user_id, week)
-            )
-        """)
+    async with aiosqlite.connect("server_data.db") as db_sqlite:
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS messages (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS bug_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS idea_points (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS voice_time (user_id INTEGER PRIMARY KEY, seconds INTEGER NOT NULL)")
+        await db_sqlite.execute("CREATE TABLE IF NOT EXISTS bug_pointed_messages (message_id INTEGER PRIMARY KEY)")
+        await db_sqlite.execute("CREATE TABLE IF NOT EXISTS idea_pointed_messages (message_id INTEGER PRIMARY KEY)")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS candies (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS message_history (user_id INTEGER, week TEXT, count INTEGER, PRIMARY KEY (user_id, week))")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS weekly_leaderboard_snapshot (week TEXT, user_id INTEGER, rank INTEGER, total_messages INTEGER, PRIMARY KEY (week, user_id))")
+        await db_sqlite.execute(
+            "CREATE TABLE IF NOT EXISTS active_voice_sessions (user_id INTEGER PRIMARY KEY, join_time_iso TEXT NOT NULL)")
+        await db_sqlite.commit()
 
-        # ✅ NEW: Create the table for storing weekly leaderboard snapshots
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS weekly_leaderboard_snapshot (
-                week TEXT,
-                user_id INTEGER,
-                rank INTEGER,
-                total_messages INTEGER,
-                PRIMARY KEY (week, user_id)
-            )
-        """)
-
-        # --- NEW: Table for tracking active voice sessions ---
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS active_voice_sessions (
-                user_id INTEGER PRIMARY KEY,
-                join_time_iso TEXT NOT NULL
-            )
-        """)
-
-        await db.commit()
-
-    # --- NEW: Reconcile voice states on startup ---
     print("[INFO] Reconciling voice states on startup...")
+    # ... (the rest of the function remains the same) ...
     startup_time = datetime.utcnow()
-    
-    # Get all users who are actually in a VC right now
     current_vc_users = set()
     for guild in bot.guilds:
         for channel in guild.voice_channels:
@@ -233,43 +196,31 @@ async def on_ready():
                 for member in channel.members:
                     if not member.bot:
                         current_vc_users.add(member.id)
-    
-    # Get all users the DB thinks are in a VC
-    async with aiosqlite.connect("server_data.db") as db:
-        cursor = await db.execute("SELECT user_id, join_time_iso FROM active_voice_sessions")
+    async with aiosqlite.connect("server_data.db") as db_sqlite:
+        cursor = await db_sqlite.execute("SELECT user_id, join_time_iso FROM active_voice_sessions")
         db_sessions = await cursor.fetchall()
-
         for user_id, join_time_iso in db_sessions:
             join_time = datetime.fromisoformat(join_time_iso)
-            
-            # If user in DB is no longer in a VC, they left while bot was offline.
             if user_id not in current_vc_users:
                 print(f"[RECONCILE] User {user_id} left while bot was offline. Logging time and closing session.")
                 seconds = int((startup_time - join_time).total_seconds())
                 if seconds > 0:
-                    await db.execute("UPDATE voice_time SET seconds = seconds + ? WHERE user_id = ?", (seconds, user_id))
-                await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (user_id,))
-
-        await db.commit()
-
-    # If user is in a VC but not in DB, they joined while bot was offline.
-    async with aiosqlite.connect("server_data.db") as db:
+                    await db_sqlite.execute("UPDATE voice_time SET seconds = seconds + ? WHERE user_id = ?",
+                                            (seconds, user_id))
+                await db_sqlite.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (user_id,))
+        await db_sqlite.commit()
+    async with aiosqlite.connect("server_data.db") as db_sqlite:
         for user_id in current_vc_users:
-            async with db.execute("SELECT 1 FROM active_voice_sessions WHERE user_id = ?", (user_id,)) as cursor:
+            async with db_sqlite.execute("SELECT 1 FROM active_voice_sessions WHERE user_id = ?", (user_id,)) as cursor:
                 if await cursor.fetchone() is None:
                     print(f"[RECONCILE] User {user_id} joined while bot was offline. Starting new session.")
-                    await db.execute("INSERT INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (user_id, startup_time.isoformat()))
-        await db.commit()
-    
+                    await db_sqlite.execute("INSERT INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)",
+                                            (user_id, startup_time.isoformat()))
+        await db_sqlite.commit()
     print("[SUCCESS] Voice state reconciliation complete.")
-    # --- END NEW ---
-
-    # ✅ NEW: Start the background task
     update_weekly_snapshot.start()
-
     bot.add_view(ApprovalView())
     bot.add_view(SuggestionStarterView())
-
     print("[SUCCESS] Bot is ready and persistent views are registered.")
 
 @tasks.loop(hours=1)
@@ -413,177 +364,73 @@ async def assign_roles(member, count, guild):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    # Constants
-    DEVELOPER_IDS = {265196052192165888, 849827666064048178} #switch to hector's id
-    SUGGEST_REACTION = "☑️"
+    DEVELOPER_IDS = {265196052192165888, 849827666064048178}
     BUG_EMOJI = "🐞"
     IDEA_EMOJI = "☑️"
     EXISTING_BOT_ID = 1361506233219158086
     POINT_THRESHOLD = 10
-
     BUG_CHANNEL_ID = 1298328050668408946
     IDEAS_CHANNEL_ID = 1295770322985025669
-    #POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
 
     emoji_channel_map = {
         BUG_EMOJI: (BUG_CHANNEL_ID, "bug_pointed_messages", "bug_points", "Bug Finder"),
         IDEA_EMOJI: (IDEAS_CHANNEL_ID, "idea_pointed_messages", "idea_points", "Idea Contributor"),
     }
 
-    TABLE_LABELS = {
-        "suggest_points": "suggestion points",
-        "bug_points": "bug points",
-        "idea_points": "idea points"
-    }
-
-    # Ignore reactions from the dictionary bot
-    if payload.user_id == EXISTING_BOT_ID:
-        return
-
+    if payload.user_id == EXISTING_BOT_ID: return
     guild = bot.get_guild(payload.guild_id)
-    if not guild:
-        return
-
+    if not guild: return
     channel = guild.get_channel(payload.channel_id)
-    if not channel:
-        return
-
+    if not channel: return
     try:
         message = await channel.fetch_message(payload.message_id)
     except Exception:
         return
-
     author = message.author
 
-    # Suggestion system
-    if payload.emoji.name == SUGGEST_REACTION and payload.channel_id in LANGUAGE_CHANNEL_IDS:
-        if payload.user_id not in LANGUAGE_MOD_IDS:
-            return  # Only award if a language mod added the ☑️
-        if author.id in LANGUAGE_MOD_IDS:
-            return  # Do not award if the author is a language mod
-        if author.bot:
-            return  # Do not award bots
-
-        async with aiosqlite.connect("server_data.db") as db:
-            # Prevent duplicate
-            async with db.execute("SELECT 1 FROM suggest_pointed_messages WHERE message_id = ?", (payload.message_id,)) as cursor:
-                already_pointed = await cursor.fetchone()
-
-            if already_pointed:
-                print(f"[DEBUG] Message {payload.message_id} already gave a suggestion point. Skipping.")
-                return
-
-            await db.execute("INSERT INTO suggest_pointed_messages (message_id) VALUES (?)", (payload.message_id,))
-
-            # Update or insert points
-            async with db.execute("SELECT count FROM suggest_points WHERE user_id = ?", (author.id,)) as cursor:
-                row = await cursor.fetchone()
-
-            if row:
-                new_count = row[0] + 1
-                await db.execute("UPDATE suggest_points SET count = ? WHERE user_id = ?", (new_count, author.id))
-            else:
-                new_count = 1
-                await db.execute("INSERT INTO suggest_points (user_id, count) VALUES (?, ?)", (author.id, 1))
-
-            await db.commit()
-        return
+    # --- THE OLD SUGGESTION SYSTEM LOGIC HAS BEEN REMOVED FROM HERE ---
 
     # Point-log editing
     if payload.channel_id == 1392585590532341782 and str(payload.emoji.name) == "✅":
-        channel = await bot.fetch_channel(payload.channel_id)  # Fetches the channel properly
-
-        if payload.user_id not in DEVELOPER_IDS:
-            return  # Ignore if not from a developer
-
-        channel = bot.get_channel(payload.channel_id)
-        if not channel:
-            return
-
+        if payload.user_id not in DEVELOPER_IDS: return
         try:
-            message = await channel.fetch_message(payload.message_id)
+            message_to_edit = await channel.fetch_message(payload.message_id)
         except Exception:
             return
-
-        lines = message.content.splitlines()
-        if not lines:
-            return
-
-        first_line = lines[0]
-        rest_of_message = "\n".join(lines[1:])
-
-        if first_line.startswith("🐞"):
-            # Extract mention from the line
-            mention = message.mentions[0].mention if message.mentions else "the reporter"
-            new_first_line = f"🟢 Fixed Bug, reported by {mention}"
-        elif first_line.startswith("💡"):
-            mention = message.mentions[0].mention if message.mentions else "the suggester"
-            new_first_line = f"🟢 Implemented Idea by {mention}"
-        else:
-            new_first_line = "🟢 Handled"
-
-        new_content = f"{new_first_line}\n{rest_of_message}"
-        await message.edit(content=new_content)
+        lines = message_to_edit.content.splitlines()
+        if not lines: return
+        first_line, rest_of_message = lines[0], "\n".join(lines[1:])
+        mention = message_to_edit.mentions[0].mention if message_to_edit.mentions else "the user"
+        if first_line.startswith("🐞"): new_first_line = f"🟢 Fixed Bug, reported by {mention}"
+        elif first_line.startswith("💡"): new_first_line = f"🟢 Implemented Idea by {mention}"
+        else: new_first_line = "🟢 Handled"
+        await message_to_edit.edit(content=f"{new_first_line}\n{rest_of_message}")
 
     # Bug / Idea system
-    if payload.user_id not in DEVELOPER_IDS:
-        return
-
-    if payload.emoji.name not in emoji_channel_map:
-        return
-
+    if payload.user_id not in DEVELOPER_IDS: return
+    if payload.emoji.name not in emoji_channel_map: return
     expected_channel_id, pointed_table, points_table, role_name = emoji_channel_map[payload.emoji.name]
-
-    if payload.channel_id != expected_channel_id:
-        return
-
-    if author.bot:
-        return
+    if payload.channel_id != expected_channel_id or author.bot: return
 
     async with aiosqlite.connect("server_data.db") as db:
-        async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?",
-                              (payload.message_id,)) as cursor:
-            already_pointed = await cursor.fetchone()
-
-        if already_pointed:
-            print(f"[DEBUG] Message {payload.message_id} already gave a point in {pointed_table}. Skipping.")
-            return
-
+        async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?", (payload.message_id,)) as cursor:
+            if await cursor.fetchone():
+                print(f"[DEBUG] Message {payload.message_id} already gave a point in {pointed_table}. Skipping.")
+                return
         await db.execute(f"INSERT INTO {pointed_table} (message_id) VALUES (?)", (payload.message_id,))
-
         async with db.execute(f"SELECT count FROM {points_table} WHERE user_id = ?", (author.id,)) as cursor:
             row = await cursor.fetchone()
-
-        if row:
-            new_count = row[0] + 1
-            await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author.id))
-        else:
-            new_count = 1
-            await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author.id, 1))
-
+        new_count = row[0] + 1 if row else 1
+        if row: await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author.id))
+        else: await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author.id, 1))
         await db.commit()
 
     print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
-    #label = TABLE_LABELS.get(points_table, points_table)  # fallback to raw name if not found
-    #await POINT_LOGS_CHANNEL.send(f"✅ {role_name} point recorded for {display_name}! {display_name} now has {new_count} {label}.")
-
     indented_content = '\n'.join(f"> {line}" for line in message.content.splitlines())
-
     if payload.emoji.name == BUG_EMOJI:
-        if POINT_LOGS_CHANNEL:
-            await POINT_LOGS_CHANNEL.send(
-                f"🐞 **Bug Reported** by {author.mention}:\n"
-                f"{indented_content}\n"
-                f"🔗 {message.jump_url}\n"
-            )
+        if POINT_LOGS_CHANNEL: await POINT_LOGS_CHANNEL.send(f"🐞 **Bug Reported** by {author.mention}:\n{indented_content}\n🔗 {message.jump_url}\n")
     elif payload.emoji.name == IDEA_EMOJI:
-        if POINT_LOGS_CHANNEL:
-            await POINT_LOGS_CHANNEL.send(
-                f"💡 **Approved Idea** by {author.mention}:\n"
-                f"{indented_content}\n"
-                f"🔗 {message.jump_url}\n"
-            )
-
+        if POINT_LOGS_CHANNEL: await POINT_LOGS_CHANNEL.send(f"💡 **Approved Idea** by {author.mention}:\n{indented_content}\n🔗 {message.jump_url}\n")
     if new_count >= POINT_THRESHOLD:
         role = discord.utils.get(guild.roles, name=role_name)
         member = guild.get_member(author.id)
@@ -592,9 +439,7 @@ async def on_raw_reaction_add(payload):
                 await member.add_roles(role)
                 print(f"[DEBUG] {member.name} was given the '{role.name}' role.")
             except discord.Forbidden:
-                print(f"[WARN] Bot doesn't have permission to assign the '{role.name}' role to {member.name}. Skipping.")
-            except discord.HTTPException as e:
-                print(f"[ERROR] Unexpected error when assigning role: {e}")
+                print(f"[WARN] Bot doesn't have permission to assign the '{role.name}' role.")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -644,11 +489,7 @@ async def on_voice_state_update(member, before, after):
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
         super().__init__(timeout=60)
-        self.author_id = author_id
-        self.current_category = current_category
-        self.page = page
-        self.total_pages = total_pages
-        self.entries = entries
+        self.author_id, self.current_category, self.page, self.total_pages, self.entries = author_id, current_category, page, total_pages, entries
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -657,157 +498,83 @@ class LeaderboardView(discord.ui.View):
         return True
 
     @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, custom_id="category_messages")
-    async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "messages", 1, self.author_id)
-
+    async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "messages", 1, self.author_id)
+    @discord.ui.button(label="Questions", style=discord.ButtonStyle.primary, custom_id="category_questions")
+    async def questions_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "questions", 1, self.author_id)
     @discord.ui.button(label="Bugs", style=discord.ButtonStyle.primary, custom_id="category_bugs")
-    async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "bugs", 1, self.author_id)
-
+    async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "bugs", 1, self.author_id)
     @discord.ui.button(label="Ideas", style=discord.ButtonStyle.primary, custom_id="category_ideas")
-    async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "ideas", 1, self.author_id)
-
-    @discord.ui.button(label="Suggestions", style=discord.ButtonStyle.primary, custom_id="category_suggestions")
-    async def suggestions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "suggestions", 1, self.author_id)
-
+    async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "ideas", 1, self.author_id)
+    # --- The 'Suggestions' button has been removed ---
     @discord.ui.button(label="Voice", style=discord.ButtonStyle.primary, custom_id="category_voice")
-    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "voice", 1, self.author_id)
+    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "voice", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table_map = {
-        "suggestions": "suggest_points",
         "messages": "messages",
         "bugs": "bug_points",
         "ideas": "idea_points",
         "voice": "voice_time"
     }
-
     label_map = {
-        "suggestions": ("suggestion", "suggestions"),
+        "questions": ("question suggested", "questions suggested"),
         "messages": ("message", "messages"),
         "bugs": ("bug found", "bugs found"),
         "ideas": ("idea", "ideas"),
         "voice": ("second", "seconds")
     }
 
-    if category not in table_map:
-        await ctx_or_interaction.response.send_message(
-            "Invalid category. Use: suggestions, messages, bugs, ideas.",
-            ephemeral=True
-        )
-        return
-
-    table = table_map[category]
-
-    async with aiosqlite.connect("server_data.db") as db:
-        time_column = "seconds" if category == "voice" else "count"
-        async with db.execute(f"SELECT user_id, {time_column} FROM {table} ORDER BY {time_column} DESC") as cursor:
-            full_rows = await cursor.fetchall()
+    if category == "questions":
+        if questions_collection is not None:
+            pipeline = [{"$group": {"_id": "$u", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
+            cursor = questions_collection.aggregate(pipeline)
+            full_rows = [(doc["_id"], doc["count"]) async for doc in cursor]
+        else:
+            error_message = "The question leaderboard is currently unavailable. Please try again later."
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(error_message, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(error_message)
+            return
+    else:
+        if category not in table_map:
+            await ctx_or_interaction.response.send_message("Invalid category.", ephemeral=True)
+            return
+        table = table_map[category]
+        async with aiosqlite.connect("server_data.db") as db:
+            time_column = "seconds" if category == "voice" else "count"
+            async with db.execute(f"SELECT user_id, {time_column} FROM {table} ORDER BY {time_column} DESC") as cursor:
+                full_rows = await cursor.fetchall()
 
     total_entries = len(full_rows)
-    top_9 = full_rows[:9]
-
-    # Find author's index/rank if present
-    author_index = None
-    for i, (uid, _) in enumerate(full_rows):
-        if str(uid) == str(author_id):
-            author_index = i
-            break
-
+    author_id_str = str(author_id)
+    author_index = next((i for i, (uid, _) in enumerate(full_rows) if str(uid) == author_id_str), None)
     author_rank = author_index + 1 if author_index is not None else None
     author_points = full_rows[author_index][1] if author_index is not None else 0
-
     lines = []
-
-    # Show top 9 entries
-    for i, (user_id, count) in enumerate(top_9, start=1):
-        member = ctx_or_interaction.guild.get_member(user_id)
-        if member:
-            username = member.display_name
-        else:
-            user = await bot.fetch_user(user_id)
-            username = user.name if user else f"User {user_id}"
-
+    top_entries = full_rows[:10]
+    for i, (user_id, count) in enumerate(top_entries, start=1):
+        try:
+            member = ctx_or_interaction.guild.get_member(int(user_id))
+            username = member.display_name if member else (await bot.fetch_user(int(user_id))).name
+        except (ValueError, discord.NotFound):
+            username = f"Unknown User ({user_id})"
         singular, plural = label_map[category]
-        if category == "voice":
-            hours = count // 3600
-            minutes = (count % 3600) // 60
-            seconds = count % 60
-            time_str = f"{hours}h {minutes}m {seconds}s"
-            line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{time_str}**"
-        else:
-            unit = singular if count == 1 else plural
-            line = f"{i}. {'➤ ' if user_id == author_id else ''}{username} • **{count} {unit}**"
-
+        unit = plural if count != 1 else singular
+        display_count = f"{count // 3600}h {(count % 3600) // 60}m {count % 60}s" if category == "voice" else f"{count} {unit}"
+        line = f"{i}. {'➤ ' if str(user_id) == author_id_str else ''}{username} • **{display_count}**"
         lines.append(line)
-
-    # Now decide what to show in the last line:
-    if author_rank is None or author_rank <= 9:
-        # Show 10th place normally if it exists
-        if total_entries > 9:
-            user_id, count = full_rows[9]
-            member = ctx_or_interaction.guild.get_member(user_id)
-            if member:
-                username = member.display_name
-            else:
-                user = await bot.fetch_user(user_id)
-                username = user.name if user else f"User {user_id}"
-
-            singular, plural = label_map[category]
-            if category == "voice":
-                hours = count // 3600
-                minutes = (count % 3600) // 60
-                seconds = count % 60
-                time_str = f"{hours}h {minutes}m {seconds}s"
-                line = f"10. {username} • **{time_str}**"
-            else:
-                unit = singular if count == 1 else plural
-                line = f"10. {username} • **{count} {unit}**"
-
-            if user_id == author_id:
-                if category == "voice":
-                    line = f"{author_rank}. {username} • **{time_str}**"
-                else:
-                    line = f"{author_rank}. {username} • **{count} {unit}**"
-            lines.append(line)
-    else:
-        # User is ranked but not in top 9 → show user's real position
-        if author_points > 0:
-            member = ctx_or_interaction.guild.get_member(author_id)
-            if member:
-                username = member.display_name
-            else:
-                user = await bot.fetch_user(author_id)
-                username = user.name if user else f"User {author_id}"
-
-            if category == "voice":
-                hours = author_points // 3600
-                minutes = (author_points % 3600) // 60
-                seconds = author_points % 60
-                time_str = f"{hours}h {minutes}m {seconds}s"
-                line = f"...\n➤ {author_rank}.\u200B {username} • **{time_str}**"
-            else:
-                singular, plural = label_map[category]
-                unit = singular if author_points == 1 else plural
-                line = f"...\n➤ {author_rank}.\u200B {username} • **{author_points} {unit}**"
-
-            lines.append(line)
-        else:
-            lines.append("*You are currently unranked.*")
-
-    description = "\n".join(lines)
-
-    embed = discord.Embed(
-        title=f"🏆 {category.capitalize()} Leaderboard",
-        description=description,
-        color=discord.Color.gold()
-    )
-
-    view = LeaderboardView(author_id, category, page, 1, full_rows)
-
+    if author_rank and author_rank > 10 and author_points > 0:
+        member = ctx_or_interaction.guild.get_member(author_id)
+        username = member.display_name if member else f"User ID: {author_id}"
+        singular, plural = label_map[category]
+        unit = plural if author_points != 1 else singular
+        display_points = f"{author_points // 3600}h {(author_points % 3600) // 60}m {author_points % 60}s" if category == "voice" else f"{author_points} {unit}"
+        lines.append(f"...\n➤ {author_rank}. {username} • **{display_points}**")
+    description = "\n".join(lines) if lines else "This leaderboard is currently empty!"
+    embed = discord.Embed(title=f"🏆 {category.capitalize()} Leaderboard", description=description,
+                          color=discord.Color.gold())
+    view = LeaderboardView(author_id, category, 1, 1, full_rows)
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.edit_message(embed=embed, view=view)
     else:
@@ -1114,6 +881,30 @@ class ApprovalView(ui.View):
         self.approve_button.disabled = True
         self.decline_button.disabled = True
         await interaction.response.edit_message(embed=new_embed, view=self)
+
+
+@bot.command(name="wipe_suggestions_data")
+async def wipe_suggestions_data(ctx):
+    """A destructive command to permanently delete the old suggestion leaderboard data."""
+    # Restrict this command to a developer ID for safety
+    DEVELOPER_ID = 849827666064048178  # Using the ID from the `give` command
+    if ctx.author.id != DEVELOPER_ID:
+        await ctx.send("❌ You do not have permission to use this destructive command.")
+        return
+
+    try:
+        async with aiosqlite.connect("server_data.db") as db:
+            # Drop the tables that stored the old suggestion data
+            await db.execute("DROP TABLE IF EXISTS suggest_points")
+            await db.execute("DROP TABLE IF EXISTS suggest_pointed_messages")
+            await db.commit()
+
+        await ctx.send("✅ Successfully wiped `suggest_points` and `suggest_pointed_messages` tables from the database.")
+        print("[ADMIN] Wiped old suggestions data via command.")
+
+    except Exception as e:
+        await ctx.send(f"An error occurred while wiping the data: {e}")
+        print(f"[ERROR] Failed to wipe suggestions data: {e}")
 
 @bot.event
 async def on_command_error(ctx, error):
