@@ -181,6 +181,82 @@ def user_message_details(user_id):
         return jsonify({"error": "An internal error occurred."}), 500
 
 
+@app.route("/api/user/<int:user_id>/voice-time-details")
+@limiter.limit("20 per minute")
+@cache.memoize(timeout=180)  # Cache for 3 minutes
+def user_voice_time_details(user_id):
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_PATH = os.path.join(BASE_DIR, "server_data.db")
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row  # Allows accessing columns by name
+        cursor = conn.cursor()
+
+        # --- Query 1: Find the most active day of the week ---
+        # This groups all voice time by day, sums it up, and returns the top day.
+        most_active_day_query = """
+            SELECT
+                CASE strftime('%w', start_timestamp)
+                    WHEN '0' THEN 'Sunday'
+                    WHEN '1' THEN 'Monday'
+                    WHEN '2' THEN 'Tuesday'
+                    WHEN '3' THEN 'Wednesday'
+                    WHEN '4' THEN 'Thursday'
+                    WHEN '5' THEN 'Friday'
+                    WHEN '6' THEN 'Saturday'
+                END as day_name
+            FROM
+                voice_sessions
+            WHERE
+                user_id = ?
+            GROUP BY
+                day_name
+            ORDER BY
+                SUM(duration_seconds) DESC
+            LIMIT 1;
+        """
+        cursor.execute(most_active_day_query, (user_id,))
+        active_day_row = cursor.fetchone()
+        most_active_day = active_day_row['day_name'] if active_day_row else None
+
+        # --- Query 2: Find the single longest voice session ---
+        longest_session_query = """
+            SELECT
+                duration_seconds,
+                strftime('%Y-%m-%d', start_timestamp) as date
+            FROM
+                voice_sessions
+            WHERE
+                user_id = ?
+            ORDER BY
+                duration_seconds DESC
+            LIMIT 1;
+        """
+        cursor.execute(longest_session_query, (user_id,))
+        longest_session_row = cursor.fetchone()
+
+        longest_session_data = {
+            "duration_seconds": longest_session_row['duration_seconds'] if longest_session_row else 0,
+            "date": longest_session_row['date'] if longest_session_row else None
+        }
+
+        conn.close()
+
+        # --- Construct the final response ---
+        response_data = {
+            "user_id": user_id,
+            "most_active_day": most_active_day,
+            "longest_session": longest_session_data
+        }
+
+        response = make_response(jsonify(response_data))
+        response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        return response
+
+    except Exception as e:
+        print(f"Error in user_voice_time_details for user {user_id}: {e}")
+        return jsonify({"error": "An internal error occurred or no voice data found."}), 500
+
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return make_response(jsonify({"error": "Rate limit exceeded", "message": str(e.description)}), 429)

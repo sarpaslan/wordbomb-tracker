@@ -189,6 +189,19 @@ async def on_ready():
             "CREATE TABLE IF NOT EXISTS weekly_leaderboard_snapshot (week TEXT, user_id INTEGER, rank INTEGER, total_messages INTEGER, PRIMARY KEY (week, user_id))")
         await db_sqlite.execute(
             "CREATE TABLE IF NOT EXISTS active_voice_sessions (user_id INTEGER PRIMARY KEY, join_time_iso TEXT NOT NULL)")
+
+        # ✅ --- NEW TABLE ---
+        # This table will permanently store every completed voice session for historical analysis.
+        await db_sqlite.execute("""
+                    CREATE TABLE IF NOT EXISTS voice_sessions (
+                        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        start_timestamp TEXT NOT NULL,
+                        end_timestamp TEXT NOT NULL,
+                        duration_seconds INTEGER NOT NULL
+                    )
+                """)
+
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -447,46 +460,46 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Ignore updates from bots
+    # Ignore updates from other bots
     if member.bot:
         return
 
-    # Use the 'from datetime import datetime' for consistency with your code
     now = datetime.utcnow()
 
-    # --- HANDLING LEAVE or MOVE ---
-    # This block executes if the user was in a valid channel before the update.
+    # --- HANDLING A USER LEAVING A VOICE CHANNEL ---
+    # This block runs if the user was in a valid channel before the update,
+    # but is no longer in one (or moved to an excluded channel).
     if before.channel and before.channel.id not in EXCLUDED_VC_IDS:
-        async with aiosqlite.connect("server_data.db") as db:
-            # 1. Find the user's join session in the database.
-            cursor = await db.execute("SELECT join_time_iso FROM active_voice_sessions WHERE user_id = ?", (member.id,))
-            session_row = await cursor.fetchone()
+        # Check if the user is truly leaving (not just moving to another valid channel)
+        if not after.channel or after.channel.id in EXCLUDED_VC_IDS:
+            async with aiosqlite.connect("server_data.db") as db:
+                # 1. Find the user's active session to get their join time.
+                cursor = await db.execute("SELECT join_time_iso FROM active_voice_sessions WHERE user_id = ?", (member.id,))
+                session_row = await cursor.fetchone()
 
-            # If a session exists, calculate the time and delete the session record.
-            if session_row:
-                join_time = datetime.fromisoformat(session_row[0])
-                duration_seconds = int((now - join_time).total_seconds())
+                if session_row:
+                    # 2. Calculate the session duration.
+                    join_time = datetime.fromisoformat(session_row[0])
+                    duration_seconds = int((now - join_time).total_seconds())
 
-                # 2. Add the calculated time to the main `voice_time` table.
-                # This "UPSERT" command updates the record if the user exists, or inserts a new one if they don't.
-                if duration_seconds > 0:
-                    await db.execute("""
-                        INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)
-                        ON CONFLICT(user_id) DO UPDATE SET seconds = seconds + excluded.seconds
-                    """, (member.id, duration_seconds))
+                    # 3. Log the completed session to our new permanent table.
+                    if duration_seconds > 5: # Only log sessions longer than 5 seconds
+                        await db.execute("""
+                            INSERT INTO voice_sessions (user_id, start_timestamp, end_timestamp, duration_seconds)
+                            VALUES (?, ?, ?, ?)
+                        """, (member.id, join_time.isoformat(), now.isoformat(), duration_seconds))
 
-                # 3. Clean up by deleting the temporary session record.
-                await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
-                await db.commit()
+                    # 4. Clean up the temporary active session record.
+                    await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
+                    await db.commit()
 
-    # --- HANDLING JOIN or MOVE ---
-    # This block executes if the user is in a valid channel after the update.
+
+    # --- HANDLING A USER JOINING A VOICE CHANNEL ---
+    # This block runs if the user is in a valid channel after the update.
     if after.channel and after.channel.id not in EXCLUDED_VC_IDS:
         async with aiosqlite.connect("server_data.db") as db:
-            # Create a new session record with the current time.
-            # INSERT OR IGNORE is used for safety to prevent errors if a session somehow already exists.
-            # When a user moves VCs, the LEAVE logic runs first, deleting the old session,
-            # and then this JOIN logic runs, creating a new one.
+            # Create a new temporary session record with the current time.
+            # "INSERT OR IGNORE" prevents errors if a session somehow already exists.
             await db.execute("INSERT OR IGNORE INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (member.id, now.isoformat()))
             await db.commit()
 
