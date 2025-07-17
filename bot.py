@@ -499,8 +499,8 @@ class LeaderboardView(discord.ui.View):
 
     @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, custom_id="category_messages")
     async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "messages", 1, self.author_id)
-    @discord.ui.button(label="Questions", style=discord.ButtonStyle.primary, custom_id="category_questions")
-    async def questions_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "questions", 1, self.author_id)
+    @discord.ui.button(label="Trivia", style=discord.ButtonStyle.primary, custom_id="category_trivias")
+    async def trivia_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "trivia", 1, self.author_id)
     @discord.ui.button(label="Bugs", style=discord.ButtonStyle.primary, custom_id="category_bugs")
     async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "bugs", 1, self.author_id)
     @discord.ui.button(label="Ideas", style=discord.ButtonStyle.primary, custom_id="category_ideas")
@@ -517,14 +517,14 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         "voice": "voice_time"
     }
     label_map = {
-        "questions": ("question suggested", "questions suggested"),
+        "trivia": ("question suggested", "trivia suggested"),
         "messages": ("message", "messages"),
         "bugs": ("bug found", "bugs found"),
         "ideas": ("idea", "ideas"),
         "voice": ("second", "seconds")
     }
 
-    if category == "questions":
+    if category == "trivia":
         if questions_collection is not None:
             pipeline = [{"$group": {"_id": "$u", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
             cursor = questions_collection.aggregate(pipeline)
