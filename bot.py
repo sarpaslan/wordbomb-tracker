@@ -913,8 +913,7 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     question_text = TextInput(
         label='Question',
         style=discord.TextStyle.paragraph,
-        placeholder="Questions about definitions, word origins, collective nouns, etc.\n"
-                    "e.g., A group of crows is called a what?",
+        placeholder="Word trivia, definitions, idioms, etc.\ne.g., A group of crows is called a what?",
         required=True,
         max_length=256,
     )
