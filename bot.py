@@ -771,7 +771,7 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
 class QuestionEditModal(Modal, title='Edit Question Suggestion'):
     def __init__(self, data: dict):
         super().__init__()
-        self.language = TextInput(label="Language", default=data.get('language'), required=True, max_length=20)
+        self.language = TextInput(label="Language / Locale", default=data.get('language'), required=True, max_length=20)
         self.difficulty = TextInput(label="Difficulty", default=data.get('difficulty'), required=True, max_length=10)
         self.question_text = TextInput(label='Question', default=data.get('question'),
                                        style=discord.TextStyle.paragraph, required=True, max_length=256)
@@ -787,7 +787,9 @@ class QuestionEditModal(Modal, title='Edit Question Suggestion'):
         self.add_item(self.other_answers)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # --- THIS IS THE CORRECTED VALIDATION LOGIC FOR THE EDIT MODAL ---
+        # --- THIS IS THE NEW, FLEXIBLE VALIDATION LOGIC ---
+
+        # 1. Define the primary map from name to code
         language_map = {
             "english": "en-US", "portuguese": "pt-BR", "turkish": "tr-TR",
             "french": "fr-FR", "spanish": "es-ES", "tagalog": "tl-TL",
@@ -795,22 +797,30 @@ class QuestionEditModal(Modal, title='Edit Question Suggestion'):
             "swedish": "sv-SE", "russian": "ru", "catalan": "ca-CA",
             "finnish": "fi", "dutch": "nl", "minecraft": "mc-MC"
         }
+        # Create a reverse map from code to code for easy lookup
+        locale_map = {code.lower(): code for code in language_map.values()}
+
         valid_difficulties = {"easy", "normal", "hard", "insane"}
 
-        # 1. Normalize the moderator's language input
-        user_lang_input = self.language.value.lower().strip()
+        # 2. Normalize the moderator's input
+        mod_input = self.language.value.lower().strip()
 
-        # 2. Check for an EXACT match in the language map keys.
-        if user_lang_input not in language_map:
+        locale_code = None
+        # 3. First, try to find it as a language name (e.g., "german")
+        if mod_input in language_map:
+            locale_code = language_map[mod_input]
+        # 4. If not found, try to find it as a locale code (e.g., "de-de")
+        elif mod_input in locale_map:
+            locale_code = locale_map[mod_input]
+
+        # 5. If it's not found in either map, it's invalid.
+        if not locale_code:
             return await interaction.response.send_message(
-                f"❌ **Invalid Language:** '{self.language.value}' is not a recognized language. Please use an exact name like `English`.",
+                f"❌ **Invalid Input:** '{self.language.value}' is not a recognized language or locale code.",
                 ephemeral=True
             )
 
-        # 3. Get the correct locale code from the map.
-        locale_code = language_map[user_lang_input]
-
-        # The rest of the validation and embed creation
+        # The rest of the validation and embed creation remains the same
         diff_input = self.difficulty.value.lower().strip()
         if diff_input not in valid_difficulties:
             return await interaction.response.send_message(f"❌ Invalid Difficulty: `{diff_input}`", ephemeral=True)
@@ -826,6 +836,7 @@ class QuestionEditModal(Modal, title='Edit Question Suggestion'):
             description=original_embed.description,
             color=original_embed.color
         )
+
         # Use the validated locale_code for the updated embed
         new_embed.add_field(name="Locale", value=f"`{locale_code}`", inline=True)
         new_embed.add_field(name="Difficulty", value=f"`{diff_input}`", inline=True)
