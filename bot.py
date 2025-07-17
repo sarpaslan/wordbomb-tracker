@@ -140,18 +140,23 @@ OTHER_BOTS_COMMANDS = {
 }
 
 POINT_LOGS_CHANNEL = None
+rejected_questions_collection = None
 
 
 @bot.event
 async def on_ready():
-    global client, db, questions_collection
+    global client, db, questions_collection, rejected_questions_collection
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         db = client.questions
         questions_collection = db.approved
+
+        # --- THIS IS THE MISSING LINE ---
+        rejected_questions_collection = db.rejected
+
         await client.admin.command('ismaster')
-        print("[SUCCESS] MongoDB connection established and saving to 'questions.approved'.")
+        print("[SUCCESS] MongoDB connection established.")
     except Exception as e:
         print(f"[ERROR] Failed to connect to MongoDB: {e}")
         return
@@ -187,7 +192,6 @@ async def on_ready():
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
-    # ... (the rest of the function remains the same) ...
     startup_time = datetime.utcnow()
     current_vc_users = set()
     for guild in bot.guilds:
@@ -202,7 +206,7 @@ async def on_ready():
         for user_id, join_time_iso in db_sessions:
             join_time = datetime.fromisoformat(join_time_iso)
             if user_id not in current_vc_users:
-                print(f"[RECONCILE] User {user_id} left while bot was offline. Logging time and closing session.")
+                print(f"[RECONCILE] User {user_id} left while bot was offline.")
                 seconds = int((startup_time - join_time).total_seconds())
                 if seconds > 0:
                     await db_sqlite.execute("UPDATE voice_time SET seconds = seconds + ? WHERE user_id = ?",
@@ -213,7 +217,7 @@ async def on_ready():
         for user_id in current_vc_users:
             async with db_sqlite.execute("SELECT 1 FROM active_voice_sessions WHERE user_id = ?", (user_id,)) as cursor:
                 if await cursor.fetchone() is None:
-                    print(f"[RECONCILE] User {user_id} joined while bot was offline. Starting new session.")
+                    print(f"[RECONCILE] User {user_id} joined while bot was offline.")
                     await db_sqlite.execute("INSERT INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)",
                                             (user_id, startup_time.isoformat()))
         await db_sqlite.commit()
@@ -510,33 +514,63 @@ class LeaderboardView(discord.ui.View):
     async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "voice", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
+    # This map can be simplified now that "suggestions" is gone
     table_map = {
         "messages": "messages",
         "bugs": "bug_points",
         "ideas": "idea_points",
         "voice": "voice_time"
     }
+    # I've renamed "questions" to "trivia" to match your code
     label_map = {
-        "trivia": ("question suggested", "trivia suggested"),
+        "trivia": ("question suggested", "questions suggested"),
         "messages": ("message", "messages"),
         "bugs": ("bug found", "bugs found"),
         "ideas": ("idea", "ideas"),
         "voice": ("second", "seconds")
     }
 
+    full_rows = []
+
+    # This assumes your bot is already saving rejected questions to a 'rejected_questions_collection'
+    # as we set up in the previous step.
     if category == "trivia":
-        if questions_collection is not None:
-            pipeline = [{"$group": {"_id": "$u", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
+        if questions_collection is not None and rejected_questions_collection is not None:
+            # --- THIS IS THE NEW, CORRECTED PIPELINE ---
+            pipeline = [
+                # Stage 1: Merge all documents from the 'rejected' collection into our pipeline.
+                # Now the pipeline contains documents from BOTH 'approved' and 'rejected'.
+                {
+                    "$unionWith": {
+                        "coll": "rejected"  # The name of the other collection to include
+                    }
+                },
+                # Stage 2: Group all the combined documents by user ID ('u').
+                {
+                    "$group": {
+                        "_id": "$u",
+                        "count": {"$sum": 1}  # Count 1 for each document (approved or rejected)
+                    }
+                },
+                # Stage 3: Sort the results to find the top contributors.
+                {
+                    "$sort": {
+                        "count": -1
+                    }
+                }
+            ]
+            # We start the pipeline on one collection, and $unionWith brings in the other.
             cursor = questions_collection.aggregate(pipeline)
             full_rows = [(doc["_id"], doc["count"]) async for doc in cursor]
         else:
-            error_message = "The question leaderboard is currently unavailable. Please try again later."
+            error_message = "The trivia leaderboard is currently unavailable. Please try again later."
             if isinstance(ctx_or_interaction, discord.Interaction):
                 await ctx_or_interaction.response.send_message(error_message, ephemeral=True)
             else:
                 await ctx_or_interaction.send(error_message)
             return
     else:
+        # This part for SQLite leaderboards remains unchanged.
         if category not in table_map:
             await ctx_or_interaction.response.send_message("Invalid category.", ephemeral=True)
             return
@@ -830,6 +864,23 @@ class ApprovalView(ui.View):
             await interaction.response.send_message("❌ You do not have permission to decline suggestions.", ephemeral=True)
             return
         original_embed = interaction.message.embeds[0]
+
+        if rejected_questions_collection is not None:
+            try:
+                # Extract the same data as the approve button
+                submitter_id = original_embed.description.split('`')[1]
+                question = next(field.value for field in original_embed.fields if field.name == "Question")
+
+                rejected_document = {
+                    "q": question,
+                    "u": submitter_id,
+                    "declined_by": interaction.user.id,
+                    "declined_at": datetime.utcnow()
+                }
+                await rejected_questions_collection.insert_one(rejected_document)
+            except Exception as e:
+                print(f"[ERROR] Failed to save rejected question: {e}")
+
         new_embed = original_embed
         new_embed.color = discord.Color.red()
         new_embed.set_footer(text=f"❌ Declined by {interaction.user.display_name}")

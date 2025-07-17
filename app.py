@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 import sqlite3
 import requests
+from pymongo import MongoClient
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -14,40 +15,44 @@ app = Flask(__name__)
 CORS(app)
 
 # --- Configuration ---
-# It's recommended to use environment variables for sensitive data like the bot token.
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
+MONGO_URI = os.environ.get("MONGO_URI")
 
-# Rate limiting: 30 requests per minute per IP
+# Rate limiting
 limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
 
-# Simple in-memory caching
+# Caching
 cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
 
-def get_discord_user(user_id):
-    """Fetches a Discord user's profile using the Discord API."""
-    if not DISCORD_BOT_TOKEN:
-        return None
-    
-    url = f"https://discord.com/api/v9/users/{user_id}"
-    headers = {
-        "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
-    }
-    
-    try:
-        print(f"Fetching Discord user {user_id} using token: {DISCORD_BOT_TOKEN[:10]}...")
+# --- MongoDB Setup ---
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    mongo_db = mongo_client.questions
+    approved_questions_collection = mongo_db.approved
+    rejected_questions_collection = mongo_db.rejected
+    print("[INFO] Flask app successfully connected to MongoDB.")
+except Exception as e:
+    mongo_client = None
+    print(f"[ERROR] Flask app failed to connect to MongoDB: {e}")
 
+
+def get_discord_user(user_id):
+    if not DISCORD_BOT_TOKEN: return None
+    url = f"https://discord.com/api/v9/users/{user_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    try:
         response = requests.get(url, headers=headers)
-        print("Status code:", response.status_code)
-        print("Response:", response.text)
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         print(f"Error fetching Discord user: {e}")
         return None
 
+
 @app.route("/")
 def home():
     return jsonify({"message": "App is deployed and running!"})
+
 
 @app.route("/api/user/<int:user_id>")
 @limiter.limit("10 per minute")
@@ -56,67 +61,87 @@ def api_user(user_id):
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         DB_PATH = os.path.join(BASE_DIR, "server_data.db")
-
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-
         stats = {}
-
-        # Your database queries remain the same
-        cursor.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            seconds = row[0]
-            stats["voice_time_seconds"] = seconds
-            stats["voice_time_hours"] = round(seconds / 3600, 2)
-
-        cursor.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            stats["messages"] = row[0]
-
-        cursor.execute("SELECT count FROM bug_points WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            stats["bug_points"] = row[0]
-
-        cursor.execute("SELECT count FROM idea_points WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            stats["idea_points"] = row[0]
-
-        cursor.execute("SELECT count FROM suggest_points WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            stats["suggest_points"] = row[0]
-
-        cursor.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            stats["candies"] = row[0]
-
+        # SQLite queries...
+        cursor.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,));
+        row = cursor.fetchone();
+        stats["voice_time_seconds"] = row[0] if row else 0;
+        stats["voice_time_hours"] = round(row[0] / 3600, 2) if row else 0
+        cursor.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,));
+        row = cursor.fetchone();
+        stats["messages"] = row[0] if row else 0
+        cursor.execute("SELECT count FROM bug_points WHERE user_id = ?", (user_id,));
+        row = cursor.fetchone();
+        stats["bug_points"] = row[0] if row else 0
+        cursor.execute("SELECT count FROM idea_points WHERE user_id = ?", (user_id,));
+        row = cursor.fetchone();
+        stats["idea_points"] = row[0] if row else 0
+        cursor.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,));
+        row = cursor.fetchone();
+        stats["candies"] = row[0] if row else 0
         conn.close()
 
-        if not stats:
+        # MongoDB query for total suggestions
+        if approved_questions_collection is not None and rejected_questions_collection is not None:
+            approved_count = approved_questions_collection.count_documents({"u": str(user_id)})
+            rejected_count = rejected_questions_collection.count_documents({"u": str(user_id)})
+            stats["total_questions_suggested"] = approved_count + rejected_count
+        else:
+            stats["total_questions_suggested"] = "N/A"
+
+        if not any(v for v in stats.values() if v != "N/A" and v != 0):
             return jsonify({"error": f"No data found for user {user_id}."}), 404
-        
-        # Fetch Discord user information
+
         discord_user = get_discord_user(user_id)
         username = discord_user.get('username') if discord_user else "Unknown"
 
+        response_data = {"user_id": user_id, "discord_username": username, "stats": stats}
+        response = make_response(jsonify(response_data))
+        response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        return response
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# --- THIS ENDPOINT HAS BEEN SIMPLIFIED ---
+@app.route("/api/user/<int:user_id>/questions-details")
+@limiter.limit("20 per minute")
+@cache.memoize(timeout=120)
+def user_questions_details(user_id):
+    if approved_questions_collection is None or rejected_questions_collection is None:
+        return jsonify({"error": "Database connection not available."}), 503
+
+    try:
+        user_id_str = str(user_id)
+        approved_count = approved_questions_collection.count_documents({"u": user_id_str})
+        rejected_count = rejected_questions_collection.count_documents({"u": user_id_str})
+        total_suggestions = approved_count + rejected_count
+
+        if total_suggestions == 0:
+            acceptance_rate = 0
+        else:
+            acceptance_rate = round((approved_count / total_suggestions) * 100, 2)
+
+        # The lists of questions have been removed.
         response_data = {
             "user_id": user_id,
-            "discord_username": username,
-            "stats": stats
+            "total_suggestions": total_suggestions,
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+            "acceptance_rate_percent": acceptance_rate,
         }
 
+        # We can now safely use jsonify again.
         response = make_response(jsonify(response_data))
         response.headers["Cache-Control"] = "public, max-age=120, immutable"
         return response
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
+
+
 @app.route("/api/user/<int:user_id>/messages-details")
 @limiter.limit("10 per minute")
 @cache.memoize(timeout=60)
@@ -127,89 +152,41 @@ def user_message_details(user_id):
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
-        # --- QUERY 1: Get the user's CURRENT overall rank (remains the same) ---
-        cursor.execute("""
-            SELECT rank FROM (
-                SELECT user_id, RANK() OVER (ORDER BY count DESC) as rank
-                FROM messages
-            )
-            WHERE user_id = ?
-        """, (user_id,))
+        cursor.execute(
+            "SELECT rank FROM (SELECT user_id, RANK() OVER (ORDER BY count DESC) as rank FROM messages) WHERE user_id = ?",
+            (user_id,))
         rank_data = cursor.fetchone()
         leaderboard_position = rank_data['rank'] if rank_data else None
-
-        # --- ✅ QUERY 2: CORRECTED query for historical weekly leaderboard ranks ---
-        # This version correctly calculates the rank based on the user's total message
-        # count at the end of each week.
         history_query = """
-            WITH AllUserWeeklyTotals AS (
-                -- Step 1: For every user, get their message count for each week they were active.
-                SELECT
-                    user_id,
-                    week,
-                    count
-                FROM message_history
-                WHERE LENGTH(week) = 7
-            ),
-            AllUserCumulativeTotals AS (
-                -- Step 2: For every user, calculate their running total message count up to each week.
-                -- This creates a "snapshot" of the leaderboard totals at the end of each week.
-                SELECT
-                    user_id,
-                    week,
-                    SUM(count) OVER (PARTITION BY user_id ORDER BY week ASC) as cumulative_messages
-                FROM AllUserWeeklyTotals
-            ),
-            RankedWeekly AS (
-                -- Step 3: Within each week's "snapshot", rank all active users by their cumulative total.
-                SELECT
-                    user_id,
-                    week,
-                    RANK() OVER (PARTITION BY week ORDER BY cumulative_messages DESC) as rank_at_end_of_week
+            WITH AllUserCumulativeTotals AS (
+                SELECT user_id, week, SUM(count) OVER (PARTITION BY user_id ORDER BY week ASC) as cumulative_messages
+                FROM message_history WHERE LENGTH(week) = 7
+            ), RankedWeekly AS (
+                SELECT user_id, week, RANK() OVER (PARTITION BY week ORDER BY cumulative_messages DESC) as rank_at_end_of_week
                 FROM AllUserCumulativeTotals
             )
-            -- Step 4: Select the weekly message count and the calculated historical rank
-            -- ONLY for the user we are interested in.
-            SELECT
-                mh.week,
-                mh.count,
-                rw.rank_at_end_of_week as rank
+            SELECT mh.week, mh.count, rw.rank_at_end_of_week as rank
             FROM message_history mh
             JOIN RankedWeekly rw ON mh.user_id = rw.user_id AND mh.week = rw.week
-            WHERE mh.user_id = ?
-            ORDER BY mh.week ASC;
+            WHERE mh.user_id = ? ORDER BY mh.week ASC;
         """
-        
         cursor.execute(history_query, (user_id,))
         history_rows = cursor.fetchall()
-
         conn.close()
-
-        # Process the new 'rank' field from the query results.
-        message_data = [
-            {"week": row["week"], "count": row["count"], "rank": row["rank"]} 
-            for row in history_rows
-        ]
-
-        return jsonify({
-            "user_id": user_id,
-            "leaderboard_position": leaderboard_position, # Current overall rank
-            "messages_per_week": message_data # List of weekly msgs + historical rank
-        })
-
+        message_data = [{"week": row["week"], "count": row["count"], "rank": row["rank"]} for row in history_rows]
+        return jsonify(
+            {"user_id": user_id, "leaderboard_position": leaderboard_position, "messages_per_week": message_data})
     except Exception as e:
         print(f"Error in user_message_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
 
+
 @app.errorhandler(429)
 def ratelimit_handler(e):
-    return make_response(jsonify({
-        "error": "Rate limit exceeded",
-        "message": str(e.description)
-    }), 429)
+    return make_response(jsonify({"error": "Rate limit exceeded", "message": str(e.description)}), 429)
+
 
 if __name__ == "__main__":
-    if not DISCORD_BOT_TOKEN:
-        print("Warning: DISCORD_BOT_TOKEN environment variable is not set.")
+    if not DISCORD_BOT_TOKEN: print("Warning: DISCORD_BOT_TOKEN environment variable is not set.")
+    if not MONGO_URI: print("Warning: MONGO_URI environment variable is not set.")
     app.run(host="0.0.0.0", port=5000)
