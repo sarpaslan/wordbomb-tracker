@@ -368,6 +368,40 @@ def user_idea_points_details(user_id):
         print(f"Error in user_idea_points_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
 
+
+@app.route("/api/user/<int:user_id>/candies-details")
+@limiter.limit("20 per minute")
+@cache.memoize(timeout=120)
+def user_candies_details(user_id):
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_PATH = os.path.join(BASE_DIR, "server_data.db")
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # --- Just one simple query to get the current candy count ---
+        cursor.execute("SELECT count FROM candies WHERE user_id = ?;", (user_id,))
+        candy_data = cursor.fetchone()
+
+        # Default to 0 if the user has no candy record yet
+        candy_count = candy_data['count'] if candy_data else 0
+
+        conn.close()
+
+        response_data = {
+            "user_id": user_id,
+            "candy_count": candy_count
+        }
+
+        response = make_response(jsonify(response_data))
+        response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        return response
+
+    except Exception as e:
+        print(f"Error in user_candies_details for user {user_id}: {e}")
+        return jsonify({"error": "An internal error occurred."}), 500
+
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return make_response(jsonify({"error": "Rate limit exceeded", "message": str(e.description)}), 429)
