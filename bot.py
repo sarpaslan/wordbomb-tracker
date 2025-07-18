@@ -193,15 +193,23 @@ async def on_ready():
         # ✅ --- NEW TABLE ---
         # This table will permanently store every completed voice session for historical analysis.
         await db_sqlite.execute("""
-                    CREATE TABLE IF NOT EXISTS voice_sessions (
-                        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        start_timestamp TEXT NOT NULL,
-                        end_timestamp TEXT NOT NULL,
-                        duration_seconds INTEGER NOT NULL
-                    )
-                """)
-
+            CREATE TABLE IF NOT EXISTS voice_sessions (
+                session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                start_timestamp TEXT NOT NULL,
+                end_timestamp TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL
+            )
+        """)
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS bug_reports (
+                report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER UNIQUE,
+                report_timestamp TEXT NOT NULL,
+                description TEXT
+            )
+        """)
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -429,17 +437,41 @@ async def on_raw_reaction_add(payload):
     expected_channel_id, pointed_table, points_table, role_name = emoji_channel_map[payload.emoji.name]
     if payload.channel_id != expected_channel_id or author.bot: return
 
+    # ✅ --- REPLACEMENT LOGIC FOR POINT AWARDING ---
     async with aiosqlite.connect("server_data.db") as db:
+        # First, check if this message already gave a point.
         async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?", (payload.message_id,)) as cursor:
             if await cursor.fetchone():
-                print(f"[DEBUG] Message {payload.message_id} already gave a point in {pointed_table}. Skipping.")
+                print(f"[DEBUG] Message {payload.message_id} already processed. Skipping.")
                 return
+
+        # Mark this message as processed to prevent duplicate points.
         await db.execute(f"INSERT INTO {pointed_table} (message_id) VALUES (?)", (payload.message_id,))
+
+        # --- NEW LOGIC FOR BUG REPORTS ---
+        if payload.emoji.name == BUG_EMOJI:
+            # 1. Log the detailed report to the new historical table.
+            report_timestamp = datetime.utcnow().isoformat()
+            # Store the first 200 characters of the message as a description.
+            report_description = message.content[:200]
+
+            await db.execute("""
+                    INSERT INTO bug_reports (user_id, message_id, report_timestamp, description)
+                    VALUES (?, ?, ?, ?)
+                """, (author.id, payload.message_id, report_timestamp, report_description))
+
+        # --- KEEPING THE LEADERBOARD IN SYNC ---
+        # 2. Update the old cumulative points table for the !l command.
+        await db.execute(f"""
+                INSERT INTO {points_table} (user_id, count) VALUES (?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+            """, (author.id,))
+
+        # Get the new total count for role assignment.
         async with db.execute(f"SELECT count FROM {points_table} WHERE user_id = ?", (author.id,)) as cursor:
             row = await cursor.fetchone()
-        new_count = row[0] + 1 if row else 1
-        if row: await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author.id))
-        else: await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author.id, 1))
+            new_count = row[0] if row else 1
+
         await db.commit()
 
     print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
