@@ -562,7 +562,30 @@ async def on_voice_state_update(member, before, after):
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
         super().__init__(timeout=60)
-        self.author_id, self.current_category, self.page, self.total_pages, self.entries = author_id, current_category, page, total_pages, entries
+        self.author_id = author_id
+        self.current_category = current_category
+        self.page = page
+        self.total_pages = total_pages
+        self.entries = entries
+
+        # --- THIS IS THE NEW ADDITION ---
+        # 1. Construct the unique URL for the user who ran the command.
+        profile_url = f"https://discord.wordbomb.io/user/{self.author_id}"
+
+        # 2. Create a special "link" button.
+        #    - style=discord.ButtonStyle.link is required for URL buttons.
+        #    - We provide a 'url' instead of a 'custom_id'.
+        #    - We put it on row=1 to place it below the category buttons.
+        profile_button = discord.ui.Button(
+            label="View Web Profile",
+            style=discord.ButtonStyle.link,
+            url=profile_url,
+            emoji="🌐",  # A nice globe emoji for a web link
+            row=1
+        )
+
+        # 3. Add the new button to the view.
+        self.add_item(profile_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -570,17 +593,27 @@ class LeaderboardView(discord.ui.View):
             return False
         return True
 
+    # All of your existing category buttons remain exactly the same.
+    # The 'row=0' parameter is implicitly set for decorated buttons.
     @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, custom_id="category_messages")
-    async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "messages", 1, self.author_id)
+    async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "messages", 1, self.author_id)
+
     @discord.ui.button(label="Trivia", style=discord.ButtonStyle.primary, custom_id="category_trivias")
-    async def trivia_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "trivia", 1, self.author_id)
+    async def trivia_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "trivia", 1, self.author_id)
+
     @discord.ui.button(label="Bugs", style=discord.ButtonStyle.primary, custom_id="category_bugs")
-    async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "bugs", 1, self.author_id)
+    async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "bugs", 1, self.author_id)
+
     @discord.ui.button(label="Ideas", style=discord.ButtonStyle.primary, custom_id="category_ideas")
-    async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "ideas", 1, self.author_id)
-    # --- The 'Suggestions' button has been removed ---
+    async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "ideas", 1, self.author_id)
+
     @discord.ui.button(label="Voice", style=discord.ButtonStyle.primary, custom_id="category_voice")
-    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button): await update_leaderboard(interaction, "voice", 1, self.author_id)
+    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "voice", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     # This map can be simplified now that "suggestions" is gone
