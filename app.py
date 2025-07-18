@@ -271,59 +271,37 @@ def user_bug_points_details(user_id):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # --- ✅ Query 1: Get the AUTHORITATIVE total from the old leaderboard table ---
-        # This ensures users with pre-existing points see their correct total.
+        # Get the authoritative total from the old leaderboard table
         total_points_query = "SELECT count FROM bug_points WHERE user_id = ?;"
         cursor.execute(total_points_query, (user_id,))
         total_points_data = cursor.fetchone()
-        # Set the total, defaulting to 0 if the user isn't in the table.
         total_bug_points = total_points_data['count'] if total_points_data else 0
 
-        # --- ✅ Query 2: Get detailed historical data from the NEW table ---
-        # This will return data only for bugs reported after the bot was updated.
+        # ✅ --- NEW HEATMAP QUERY ---
+        # Get the date of every single bug report from the historical table.
+        # This data is perfect for building a heatmap on the frontend.
+        heatmap_query = "SELECT strftime('%Y-%m-%d', report_timestamp) as date FROM bug_reports WHERE user_id = ?;"
+        cursor.execute(heatmap_query, (user_id,))
+        # We'll count the occurrences of each date on the frontend.
+        all_bug_dates = [row['date'] for row in cursor.fetchall()]
 
-        # Get first bug date
-        cursor.execute(
-            "SELECT MIN(strftime('%Y-%m-%d', report_timestamp)) as first_bug_date FROM bug_reports WHERE user_id = ?;",
-            (user_id,))
-        first_bug_data = cursor.fetchone()
-        first_bug_date = first_bug_data['first_bug_date'] if first_bug_data else None
-
-        # Get monthly breakdown
-        monthly_query = """
-            SELECT
-                strftime('%Y-%m', report_timestamp) as month,
-                COUNT(report_id) as count
-            FROM bug_reports
-            WHERE user_id = ?
-            GROUP BY month
-            ORDER BY month ASC;
-        """
-        cursor.execute(monthly_query, (user_id,))
-        bugs_per_month = [dict(row) for row in cursor.fetchall()]
-
-        # Get recent bugs
-        recent_bugs_query = """
-            SELECT
-                description,
-                strftime('%Y-%m-%d', report_timestamp) as date
-            FROM bug_reports
-            WHERE user_id = ?
-            ORDER BY report_timestamp DESC
-            LIMIT 5;
-        """
+        # Get recent bugs (this query remains useful)
+        recent_bugs_query = "SELECT description, strftime('%Y-%m-%d', report_timestamp) as date FROM bug_reports WHERE user_id = ? ORDER BY report_timestamp DESC LIMIT 5;"
         cursor.execute(recent_bugs_query, (user_id,))
         recent_bugs = [dict(row) for row in cursor.fetchall()]
 
         conn.close()
 
-        # --- Construct the final API response with the hybrid data ---
+        # The 'first_bug_date' can now be derived from the heatmap data if it exists.
+        first_bug_date = min(all_bug_dates) if all_bug_dates else None
+
+        # Construct the new API response
         response_data = {
             "user_id": user_id,
-            "total_bug_points": total_bug_points,  # Authoritative total from old table
-            "first_bug_date": first_bug_date,  # Detailed data from new table
-            "bugs_per_month": bugs_per_month,  # Detailed data from new table
-            "recent_bugs": recent_bugs  # Detailed data from new table
+            "total_bug_points": total_bug_points,
+            "first_bug_date": first_bug_date,
+            "contribution_dates": all_bug_dates,  # The new data key
+            "recent_bugs": recent_bugs
         }
 
         response = make_response(jsonify(response_data))
