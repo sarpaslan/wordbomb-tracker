@@ -312,6 +312,62 @@ def user_bug_points_details(user_id):
         print(f"Error in user_bug_points_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
 
+
+@app.route("/api/user/<int:user_id>/idea-points-details")
+@limiter.limit("20 per minute")
+@cache.memoize(timeout=120)
+def user_idea_points_details(user_id):
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_PATH = os.path.join(BASE_DIR, "server_data.db")
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # --- Query 1: Get the AUTHORITATIVE total from the old 'idea_points' table ---
+        total_points_query = "SELECT count FROM idea_points WHERE user_id = ?;"
+        cursor.execute(total_points_query, (user_id,))
+        total_points_data = cursor.fetchone()
+        total_idea_points = total_points_data['count'] if total_points_data else 0
+
+        # --- Query 2: Get detailed historical data from the NEW 'idea_submissions' table ---
+
+        # Get first idea date
+        cursor.execute(
+            "SELECT MIN(strftime('%Y-%m-%d', submission_timestamp)) as first_idea_date FROM idea_submissions WHERE user_id = ?;",
+            (user_id,))
+        first_idea_data = cursor.fetchone()
+        first_idea_date = first_idea_data['first_idea_date'] if first_idea_data else None
+
+        # Get the date of every single idea for the heatmap
+        heatmap_query = "SELECT strftime('%Y-%m-%d', submission_timestamp) as date FROM idea_submissions WHERE user_id = ?;"
+        cursor.execute(heatmap_query, (user_id,))
+        all_idea_dates = [row['date'] for row in cursor.fetchall()]
+
+        # Get recent ideas
+        recent_ideas_query = "SELECT description, strftime('%Y-%m-%d', submission_timestamp) as date FROM idea_submissions WHERE user_id = ? ORDER BY submission_timestamp DESC LIMIT 5;"
+        cursor.execute(recent_ideas_query, (user_id,))
+        recent_ideas = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
+
+        # --- Construct the final API response ---
+        response_data = {
+            "user_id": user_id,
+            "total_idea_points": total_idea_points,
+            "first_idea_date": first_idea_date,
+            "contribution_dates": all_idea_dates,
+            "recent_ideas": recent_ideas
+        }
+
+        response = make_response(jsonify(response_data))
+        response.headers["Cache-Control"] = "public, max-age=120, immutable"
+        return response
+
+    except Exception as e:
+        print(f"Error in user_idea_points_details for user {user_id}: {e}")
+        return jsonify({"error": "An internal error occurred."}), 500
+
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return make_response(jsonify({"error": "Rate limit exceeded", "message": str(e.description)}), 429)

@@ -210,6 +210,16 @@ async def on_ready():
                 description TEXT
             )
         """)
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS idea_submissions (
+                submission_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER UNIQUE,
+                submission_timestamp TEXT NOT NULL,
+                description TEXT
+            )
+        """)
+
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -459,6 +469,15 @@ async def on_raw_reaction_add(payload):
                     INSERT INTO bug_reports (user_id, message_id, report_timestamp, description)
                     VALUES (?, ?, ?, ?)
                 """, (author.id, payload.message_id, report_timestamp, report_description))
+
+        # ✅ --- NEW LOGIC FOR IDEA SUBMISSIONS ---
+        if payload.emoji.name == IDEA_EMOJI:
+            submission_timestamp = datetime.utcnow().isoformat()
+            submission_description = message.content[:200]
+            await db.execute("""
+                    INSERT INTO idea_submissions (user_id, message_id, submission_timestamp, description)
+                    VALUES (?, ?, ?, ?)
+                """, (author.id, payload.message_id, submission_timestamp, submission_description))
 
         # --- KEEPING THE LEADERBOARD IN SYNC ---
         # 2. Update the old cumulative points table for the !l command.
