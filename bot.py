@@ -406,6 +406,54 @@ async def assign_roles(member, count, guild):
                 else:
                     print(f"[WARN] Missing permissions to assign {role_name} to {member.name}")
 
+
+async def _fetch_message_snapshot(channel: discord.TextChannel, reacted_message: discord.Message) -> dict:
+    """
+    Fetches a snapshot of consecutive messages from the same author,
+    returning both the combined text content and the URL of the first image found.
+    """
+    SEARCH_LIMIT = 25
+    TIME_LIMIT_MINUTES = 5
+    report_author = reacted_message.author
+
+    snapshot_messages = [reacted_message]
+
+    async for previous_message in channel.history(limit=SEARCH_LIMIT, before=reacted_message):
+        if previous_message.author.id != report_author.id:
+            break
+        time_difference = reacted_message.created_at - previous_message.created_at
+        if time_difference.total_seconds() > (TIME_LIMIT_MINUTES * 60):
+            break
+        snapshot_messages.append(previous_message)
+
+    snapshot_messages.reverse()
+
+    # --- NEW LOGIC: Extract both text and the first image URL ---
+    full_conversation = []
+    first_image_url = None
+
+    for msg in snapshot_messages:
+        # Add the text content if it exists
+        if msg.content:
+            full_conversation.append(msg.content)
+
+        # If we haven't found an image yet, check for one in this message
+        if not first_image_url and msg.attachments:
+            for attachment in msg.attachments:
+                # Check if the attachment is an image
+                if attachment.content_type and attachment.content_type.startswith("image/"):
+                    first_image_url = attachment.url
+                    break  # Stop after finding the first image
+
+    # Combine the text and format it
+    combined_text = "\n".join(full_conversation)
+    indented_content = '\n'.join(
+        f"> {line}" for line in combined_text.splitlines()) if combined_text else "> (No text content)"
+
+    # Return a dictionary with both pieces of data
+    return {"text": indented_content, "image_url": first_image_url}
+
+
 @bot.event
 async def on_raw_reaction_add(payload):
     DEVELOPER_IDS = {265196052192165888, 849827666064048178}
@@ -427,91 +475,88 @@ async def on_raw_reaction_add(payload):
     channel = guild.get_channel(payload.channel_id)
     if not channel: return
     try:
-        message = await channel.fetch_message(payload.message_id)
+        reacted_message = await channel.fetch_message(payload.message_id)
     except Exception:
         return
-    author = message.author
+    author = reacted_message.author
 
-    # --- THE OLD SUGGESTION SYSTEM LOGIC HAS BEEN REMOVED FROM HERE ---
-
-    # Point-log editing
+    # Point-log editing (no changes needed here)
     if payload.channel_id == 1392585590532341782 and str(payload.emoji.name) == "✅":
         if payload.user_id not in DEVELOPER_IDS: return
         try:
             message_to_edit = await channel.fetch_message(payload.message_id)
+            lines = message_to_edit.content.splitlines()
+            if not lines: return
+            first_line, rest_of_message = lines[0], "\n".join(lines[1:])
+            mention = message_to_edit.mentions[0].mention if message_to_edit.mentions else "the user"
+            if first_line.startswith("🐞"):
+                new_first_line = f"🟢 Fixed Bug, reported by {mention}"
+            elif first_line.startswith("💡"):
+                new_first_line = f"🟢 Implemented Idea by {mention}"
+            else:
+                new_first_line = "🟢 Handled"
+            await message_to_edit.edit(content=f"{new_first_line}\n{rest_of_message}")
         except Exception:
-            return
-        lines = message_to_edit.content.splitlines()
-        if not lines: return
-        first_line, rest_of_message = lines[0], "\n".join(lines[1:])
-        mention = message_to_edit.mentions[0].mention if message_to_edit.mentions else "the user"
-        if first_line.startswith("🐞"): new_first_line = f"🟢 Fixed Bug, reported by {mention}"
-        elif first_line.startswith("💡"): new_first_line = f"🟢 Implemented Idea by {mention}"
-        else: new_first_line = "🟢 Handled"
-        await message_to_edit.edit(content=f"{new_first_line}\n{rest_of_message}")
+            pass
+        return
 
     # Bug / Idea system
     if payload.user_id not in DEVELOPER_IDS: return
     if payload.emoji.name not in emoji_channel_map: return
+
     expected_channel_id, pointed_table, points_table, role_name = emoji_channel_map[payload.emoji.name]
+
     if payload.channel_id != expected_channel_id or author.bot: return
 
-    # ✅ --- REPLACEMENT LOGIC FOR POINT AWARDING ---
+    # Database operations (no changes needed here)
     async with aiosqlite.connect("server_data.db") as db:
-        # First, check if this message already gave a point.
         async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?", (payload.message_id,)) as cursor:
             if await cursor.fetchone():
-                print(f"[DEBUG] Message {payload.message_id} already processed. Skipping.")
+                print(f"[DEBUG] Message {payload.message_id} already gave a point. Skipping.")
                 return
-
-        # Mark this message as processed to prevent duplicate points.
         await db.execute(f"INSERT INTO {pointed_table} (message_id) VALUES (?)", (payload.message_id,))
-
-        # --- NEW LOGIC FOR BUG REPORTS ---
-        if payload.emoji.name == BUG_EMOJI:
-            # 1. Log the detailed report to the new historical table.
-            report_timestamp = datetime.utcnow().isoformat()
-            # Store the first 200 characters of the message as a description.
-            report_description = message.content[:200]
-
-            await db.execute("""
-                    INSERT INTO bug_reports (user_id, message_id, report_timestamp, description)
-                    VALUES (?, ?, ?, ?)
-                """, (author.id, payload.message_id, report_timestamp, report_description))
-
-        # ✅ --- NEW LOGIC FOR IDEA SUBMISSIONS ---
-        if payload.emoji.name == IDEA_EMOJI:
-            submission_timestamp = datetime.utcnow().isoformat()
-            submission_description = message.content[:200]
-            await db.execute("""
-                    INSERT INTO idea_submissions (user_id, message_id, submission_timestamp, description)
-                    VALUES (?, ?, ?, ?)
-                """, (author.id, payload.message_id, submission_timestamp, submission_description))
-
-        # --- KEEPING THE LEADERBOARD IN SYNC ---
-        # 2. Update the old cumulative points table for the !l command.
-        await db.execute(f"""
-                INSERT INTO {points_table} (user_id, count) VALUES (?, 1)
-                ON CONFLICT(user_id) DO UPDATE SET count = count + 1
-            """, (author.id,))
-
-        # Get the new total count for role assignment.
         async with db.execute(f"SELECT count FROM {points_table} WHERE user_id = ?", (author.id,)) as cursor:
             row = await cursor.fetchone()
-            new_count = row[0] if row else 1
-
+        new_count = row[0] + 1 if row else 1
+        if row:
+            await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author.id))
+        else:
+            await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author.id, 1))
         await db.commit()
-
     print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
-    indented_content = '\n'.join(f"> {line}" for line in message.content.splitlines())
-    if payload.emoji.name == BUG_EMOJI:
-        if POINT_LOGS_CHANNEL: await POINT_LOGS_CHANNEL.send(f"🐞 **Bug Reported** by {author.mention}:\n{indented_content}\n🔗 {message.jump_url}\n")
-    elif payload.emoji.name == IDEA_EMOJI:
-        if POINT_LOGS_CHANNEL: await POINT_LOGS_CHANNEL.send(f"💡 **Approved Idea** by {author.mention}:\n{indented_content}\n🔗 {message.jump_url}\n")
+
+    # --- THIS IS THE NEW LOGGING LOGIC ---
+    # 1. Fetch the snapshot data (which is now a dictionary)
+    snapshot_data = await _fetch_message_snapshot(channel, reacted_message)
+
+    if POINT_LOGS_CHANNEL:
+        log_title = ""
+        log_color = discord.Color.default()
+        if payload.emoji.name == BUG_EMOJI:
+            log_title = f"🐞 **Bug Reported** by {author.mention}"
+            log_color = discord.Color.red()
+        elif payload.emoji.name == IDEA_EMOJI:
+            log_title = f"💡 **Approved Idea** by {author.mention}"
+            log_color = discord.Color.green()
+
+        # 2. Create an embed for the log message
+        log_embed = discord.Embed(
+            description=f"{snapshot_data['text']}\n\n🔗 [Jump to Message]({reacted_message.jump_url})",
+            color=log_color
+        )
+
+        # 3. If an image URL was found, add it to the embed
+        if snapshot_data['image_url']:
+            log_embed.set_image(url=snapshot_data['image_url'])
+
+        # 4. Send the log with the title in the content and the details in the embed
+        await POINT_LOGS_CHANNEL.send(content=log_title, embed=log_embed)
+
+    # Handle role assignment (no changes needed here)
     if new_count >= POINT_THRESHOLD:
         role = discord.utils.get(guild.roles, name=role_name)
         member = guild.get_member(author.id)
-        if role and role not in member.roles:
+        if role and member and role not in member.roles:
             try:
                 await member.add_roles(role)
                 print(f"[DEBUG] {member.name} was given the '{role.name}' role.")

@@ -17,6 +17,7 @@ CORS(app)
 # --- Configuration ---
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
+WORDBOMB_API_TOKEN = os.environ.get("WORDBOMB_API_TOKEN")
 
 # Rate limiting
 limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
@@ -401,6 +402,56 @@ def user_candies_details(user_id):
     except Exception as e:
         print(f"Error in user_candies_details for user {user_id}: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
+
+
+@app.route("/api/user/<int:user_id>/wordbomb-profile")
+@limiter.limit("20 per minute")
+@cache.memoize(timeout=300)  # Cache for 5 minutes
+def wordbomb_profile(user_id):
+    """
+    Fetches a user's profile from the official Word Bomb API,
+    processes it, and returns a curated selection of stats.
+    """
+    # 1. Check if the token is configured on the server
+    if not WORDBOMB_API_TOKEN:
+        return jsonify({"error": "Word Bomb API token is not configured."}), 500
+
+    # 2. Prepare the request to the external API
+    api_url = f"http://api.wordbomb.io/api/profile?u={user_id}"
+    headers = {
+        "Authorization": f"Bearer {WORDBOMB_API_TOKEN}"
+    }
+
+    try:
+        # 3. Make the GET request
+        response = requests.get(api_url, headers=headers)
+        response.raise_for_status()  # Raise an error for bad responses (4xx or 5xx)
+        raw_data = response.json()
+
+        # 4. Process the raw data into a clean, curated dictionary
+        # This is where we select only the fields we want to show
+        profile_data = {
+            "id": raw_data.get("id"),
+            "displayName": raw_data.get("displayName", "N/A"),
+            "avatarUrl": f"https://cdn.discordapp.com/avatars/{raw_data.get('id')}/{raw_data.get('avatar')}?size=256",
+            "score": raw_data.get("score", 0),
+            "wins": raw_data.get("win", 0),
+            "wordCount": raw_data.get("wordCount", 0),
+            "playTime": raw_data.get("playTime", 0),  # This is in minutes
+            "longestWord": raw_data.get("longestWord", "N/A")
+        }
+
+        return jsonify(profile_data)
+
+    except requests.exceptions.HTTPError as e:
+        # If the user doesn't exist on Word Bomb, the API returns a 404
+        if e.response.status_code == 404:
+            return jsonify({"error": "Word Bomb profile not found for this user."}), 404
+        # Handle other errors like wrong token (401)
+        return jsonify({"error": f"Failed to fetch Word Bomb profile: {e.response.status_code}"}), 502
+    except requests.exceptions.RequestException as e:
+        # Handle network errors
+        return jsonify({"error": f"Network error contacting Word Bomb API: {e}"}), 503
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
