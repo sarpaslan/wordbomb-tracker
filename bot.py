@@ -1228,7 +1228,7 @@ class TicketStarterView(ui.View):
             title=f"Ticket for {user.display_name}",
             description="Thank you for creating a ticket. Please describe your issue in detail, and be patient for a response.",
             color=discord.Color.blue()
-        ).set_footer(text="You can close this ticket at any time using the button below.")
+        )
 
         # Ping the user and the developer
         await new_channel.send(
