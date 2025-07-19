@@ -142,6 +142,12 @@ OTHER_BOTS_COMMANDS = {
 POINT_LOGS_CHANNEL = None
 rejected_questions_collection = None
 
+# The channel where the "Create Ticket" button will be posted
+TICKET_SETUP_CHANNEL_ID = 1395899736032018592
+# The category where new ticket channels will be created
+TICKET_CATEGORY_ID = 1395901776409923684
+# The developer who will be added to all tickets
+DEVELOPER_ID = 265196052192165888
 
 @bot.event
 async def on_ready():
@@ -256,6 +262,9 @@ async def on_ready():
     update_weekly_snapshot.start()
     bot.add_view(ApprovalView())
     bot.add_view(SuggestionStarterView())
+
+    bot.add_view(TicketStarterView())
+    bot.add_view(TicketCloseView())
     print("[SUCCESS] Bot is ready and persistent views are registered.")
 
 @tasks.loop(hours=1)
@@ -1115,28 +1124,140 @@ class ApprovalView(ui.View):
         self.edit_button.disabled = True  # Also disable the edit button
         await interaction.response.edit_message(embed=new_embed, view=self)
 
-@bot.command(name="wipe_suggestions_data")
-async def wipe_suggestions_data(ctx):
-    """A destructive command to permanently delete the old suggestion leaderboard data."""
-    # Restrict this command to a developer ID for safety
-    DEVELOPER_ID = 849827666064048178  # Using the ID from the `give` command
-    if ctx.author.id != DEVELOPER_ID:
-        await ctx.send("❌ You do not have permission to use this destructive command.")
-        return
 
-    try:
-        async with aiosqlite.connect("server_data.db") as db:
-            # Drop the tables that stored the old suggestion data
-            await db.execute("DROP TABLE IF EXISTS suggest_points")
-            await db.execute("DROP TABLE IF EXISTS suggest_pointed_messages")
-            await db.commit()
+# --- ADD THESE THREE NEW TICKET SYSTEM CLASSES ---
 
-        await ctx.send("✅ Successfully wiped `suggest_points` and `suggest_pointed_messages` tables from the database.")
-        print("[ADMIN] Wiped old suggestions data via command.")
+# This view is for the final "Confirm" or "Cancel" action. It's not persistent.
+class TicketConfirmCloseView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)  # This view only lasts for 60 seconds
 
-    except Exception as e:
-        await ctx.send(f"An error occurred while wiping the data: {e}")
-        print(f"[ERROR] Failed to wipe suggestions data: {e}")
+    @ui.button(label='Confirm Close', style=discord.ButtonStyle.danger, custom_id='ticket_confirm_close')
+    async def confirm_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("Closing the ticket...", ephemeral=True)
+        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user.name}")
+
+    @ui.button(label='Cancel', style=discord.ButtonStyle.secondary, custom_id='ticket_cancel_close')
+    async def cancel_button(self, interaction: discord.Interaction, button: ui.Button):
+        # Just delete the confirmation message
+        await interaction.message.delete()
+
+
+# This persistent view contains the "Close Ticket" button inside a ticket channel.
+class TicketCloseView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, custom_id='close_ticket_button')
+    async def close_ticket_button(self, interaction: discord.Interaction, button: ui.Button):
+        # Only the developer or the ticket creator can close it
+        # We find the creator's ID from the channel topic
+        creator_id = int(interaction.channel.topic.split(': ')[1])
+        if interaction.user.id not in [DEVELOPER_ID, creator_id]:
+            return await interaction.response.send_message("You do not have permission to close this ticket.",
+                                                           ephemeral=True)
+
+        # Send a confirmation message
+        await interaction.response.send_message(
+            "Are you sure you want to close this ticket? This action cannot be undone.",
+            view=TicketConfirmCloseView(),
+            ephemeral=True
+        )
+
+
+# This persistent view contains the initial "Create Ticket" button.
+class TicketStarterView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label='Create Ticket', style=discord.ButtonStyle.green, custom_id='create_ticket_button')
+    async def create_ticket_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("Creating your private ticket channel...", ephemeral=True)
+
+        guild = interaction.guild
+        user = interaction.user
+
+        # Fetch the category where tickets will be created
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+        if not category:
+            await interaction.followup.send("Error: Ticket category not found. Please contact an admin.",
+                                            ephemeral=True)
+            return
+
+        # Fetch the developer member object
+        developer = guild.get_member(DEVELOPER_ID)
+        if not developer:
+            await interaction.followup.send("Error: Developer user not found in this server.", ephemeral=True)
+            return
+
+        # Check if the user already has an open ticket channel
+        ticket_channel_name = f"ticket-{user.name}-{user.discriminator}"
+        existing_channel = discord.utils.get(guild.text_channels, name=ticket_channel_name, category=category)
+        if existing_channel:
+            await interaction.followup.send(f"You already have an open ticket: {existing_channel.mention}",
+                                            ephemeral=True)
+            return
+
+        # Define permissions for the new channel
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True,
+                                              embed_links=True),
+            developer: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True,
+                                                   embed_links=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)  # Ensure the bot can see it
+        }
+
+        # Create the new private channel
+        try:
+            new_channel = await guild.create_text_channel(
+                name=ticket_channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=f"Ticket created by: {user.id}"  # Store the user ID for permission checks later
+            )
+        except discord.Forbidden:
+            return await interaction.followup.send("I don't have permission to create channels.", ephemeral=True)
+        except Exception as e:
+            return await interaction.followup.send(f"An unexpected error occurred: {e}", ephemeral=True)
+
+        # Send a welcome message in the new channel
+        welcome_embed = discord.Embed(
+            title=f"Ticket for {user.display_name}",
+            description="Thank you for creating a ticket. Please describe your issue in detail, and be patient for a response.",
+            color=discord.Color.blue()
+        ).set_footer(text="You can close this ticket at any time using the button below.")
+
+        # Ping the user and the developer
+        await new_channel.send(
+            content=f"Welcome, {user.mention}! {developer.mention} has been notified.",
+            embed=welcome_embed,
+            view=TicketCloseView()  # Add the "Close Ticket" button
+        )
+
+        await interaction.followup.send(f"Your ticket has been created: {new_channel.mention}", ephemeral=True)
+
+
+# --- ADD THIS NEW ADMIN COMMAND ---
+
+@bot.command(name="setup_tickets")
+async def setup_tickets(ctx):
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this command.")
+    """Sends the persistent message with the 'Create Ticket' button."""
+    target_channel = bot.get_channel(TICKET_SETUP_CHANNEL_ID)
+    if not target_channel:
+        return await ctx.send("Error: Ticket setup channel not found.")
+
+    embed = discord.Embed(
+        title="Create a Private Ticket",
+        description="Click the button below to create a private channel to discuss your issue directly with the developer.",
+        color=discord.Color.green()
+    ).set_footer(text="Use this for sensitive reports regarding moderators, cheaters, or other users.")
+
+    await target_channel.send(embed=embed, view=TicketStarterView())
 
 @bot.event
 async def on_command_error(ctx, error):
