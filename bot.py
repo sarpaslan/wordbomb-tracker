@@ -1150,14 +1150,16 @@ class TicketCloseView(ui.View):
 
     @ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, custom_id='close_ticket_button')
     async def close_ticket_button(self, interaction: discord.Interaction, button: ui.Button):
-        # Only the developer or the ticket creator can close it
-        # We find the creator's ID from the channel topic
-        creator_id = int(interaction.channel.topic.split(': ')[1])
-        if interaction.user.id not in [DEVELOPER_ID, creator_id]:
-            return await interaction.response.send_message("You do not have permission to close this ticket.",
-                                                           ephemeral=True)
+        # --- THIS IS THE ONLY CHANGE ---
+        # The check for the creator_id has been removed.
+        # Now, only the developer can initiate the closing process.
+        if interaction.user.id != DEVELOPER_ID:
+            return await interaction.response.send_message(
+                "Only the developer can close this ticket.",
+                ephemeral=True
+            )
 
-        # Send a confirmation message
+        # The rest of the function (sending the confirmation) remains the same.
         await interaction.response.send_message(
             "Are you sure you want to close this ticket? This action cannot be undone.",
             view=TicketConfirmCloseView(),
