@@ -876,6 +876,14 @@ class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+
+        banned_role_name = "Suggestion Limited"
+        if any(role.name == banned_role_name for role in interaction.user.roles):
+            await interaction.response.send_message(
+                "🚫 You are limited from submitting suggestions.",
+                ephemeral=True
+            )
+
         # --- THIS IS THE CORRECTED VALIDATION LOGIC ---
 
         # 1. Normalize the user's language input (lowercase, no extra spaces)
