@@ -1178,7 +1178,7 @@ class ApprovalView(ui.View):
         await interaction.response.edit_message(embed=new_embed, view=self)
 
 
-# --- ADD THESE THREE NEW TICKET SYSTEM CLASSES ---
+# --- TICKETS ---
 
 # This view is for the final "Confirm" or "Cancel" action. It's not persistent.
 class TicketConfirmCloseView(ui.View):
@@ -1206,7 +1206,7 @@ class TicketCloseView(ui.View):
         # --- THIS IS THE ONLY CHANGE ---
         # The check for the creator_id has been removed.
         # Now, only the developer can initiate the closing process.
-        if interaction.user.id != DEVELOPER_ID:
+        if interaction.user.id != DEVELOPER_ID and interaction.user.id != 849827666064048178:
             return await interaction.response.send_message(
                 "Only the developer can close this ticket.",
                 ephemeral=True
@@ -1227,6 +1227,14 @@ class TicketStarterView(ui.View):
 
     @ui.button(label='Create Ticket', style=discord.ButtonStyle.green, custom_id='create_ticket_button')
     async def create_ticket_button(self, interaction: discord.Interaction, button: ui.Button):
+
+        banned_role_name = "Ticket Limited"
+        if any(role.name == banned_role_name for role in interaction.user.roles):
+            await interaction.response.send_message(
+                "🚫 You are limited from creating tickets.",
+                ephemeral=True
+            )
+
         await interaction.response.send_message("Creating your private ticket channel...", ephemeral=True)
 
         guild = interaction.guild
