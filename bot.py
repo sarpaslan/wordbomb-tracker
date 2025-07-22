@@ -1318,7 +1318,7 @@ async def setup_tickets(ctx):
         title="Create a Private Ticket",
         description="Click the button below to create a private channel to discuss your issue directly with the developer.",
         color=discord.Color.green()
-    ).set_footer(text="Use this for sensitive reports regarding moderators, cheaters, or other users.")
+    ).set_footer(text="Use this for sensitive reports regarding moderators, cheaters, or issues in general.")
 
     await target_channel.send(embed=embed, view=TicketStarterView())
 
