@@ -360,7 +360,8 @@ async def on_message(message):
                 await db.commit()
 
             # Assign roles if needed
-            await assign_roles(message.author, new_count, message.guild)
+            if user_id != 265196052192165888:
+                await assign_roles(message.author, new_count, message.guild)
 
             # Candy drop (unchanged)
             if random.randint(1, 7000) == 1:
