@@ -17,10 +17,10 @@ CORS(app)
 # --- Configuration ---
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-WORDBOMB_API_TOKEN = os.environ.get("WORDBOMB_API_TOKEN")
+WORDBOMB_API_TOKEN = os.environ.get("WORDBOMB_API_TOKEN_PROFILE")
 
 # Rate limiting
-limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])
+limiter = Limiter(get_remote_address, app=app, default_limits=["30 per minute"])    
 
 # Caching
 cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
