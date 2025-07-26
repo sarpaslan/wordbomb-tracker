@@ -1625,7 +1625,7 @@ async def coinflip(ctx: commands.Context, amount: int):
     active_coinflips.add(author.id)
 
     try:
-        MAX_BET = 100000
+        MAX_BET = 50000
         if amount <= 0:
             await ctx.send("Please enter a positive amount of coins to bet.")
             return
