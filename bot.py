@@ -1625,9 +1625,9 @@ async def coinflip(ctx: commands.Context, amount: int):
     active_coinflips.add(author.id)
 
     if amount > 10_000:
-        win_chance = 40  # lower win chance
+        win_chance = 42  # lower win chance
     else:
-        win_chance = 45  # normal win chance
+        win_chance = 46  # normal win chance
 
     try:
         MAX_BET = 50000
