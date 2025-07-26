@@ -1624,6 +1624,11 @@ async def coinflip(ctx: commands.Context, amount: int):
 
     active_coinflips.add(author.id)
 
+    if amount > 10_000:
+        win_chance = 40  # lower win chance
+    else:
+        win_chance = 45  # normal win chance
+
     try:
         MAX_BET = 50000
         if amount <= 0:
@@ -1653,7 +1658,7 @@ async def coinflip(ctx: commands.Context, amount: int):
         await asyncio.sleep(3.0)
 
         # Logic & API Calls
-        if random.randint(1, 100) <= 45:
+        if random.randint(1, 100) <= win_chance:
             result = "win"
             operation = "add"
             reason = "coinflip win"
