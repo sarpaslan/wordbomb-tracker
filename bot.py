@@ -39,6 +39,13 @@ CACHE_DURATION_SECONDS = 10 * 60
 
 active_coinflips = set()
 
+# --- BLACKJACK CONSTANTS AND STATE ---
+SUITS = {"Spades": "♠️", "Hearts": "♥️", "Clubs": "♣️", "Diamonds": "♦️"}
+RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11}
+
+# This dictionary will hold all active games, with the user's ID as the key.
+active_blackjack_games = {}
+
 # --- MongoDB Setup ---
 client = None
 db = None
@@ -1717,6 +1724,296 @@ async def coinflip(ctx: commands.Context, amount: int):
 
     finally:
         active_coinflips.remove(author.id)
+
+
+def create_deck():
+    """Creates a standard 52-card deck and shuffles it."""
+    deck = [(suit, rank) for suit in SUITS for rank in RANKS]
+    random.shuffle(deck)
+    return deck
+
+
+def calculate_hand_value(hand):
+    """Calculates the value of a hand, correctly handling the value of Aces."""
+    value = 0
+    num_aces = 0
+    for _, rank in hand:
+        value += RANKS[rank]
+        if rank == 'A':
+            num_aces += 1
+
+    # If the total value is over 21, convert Aces from 11 to 1 until the value is 21 or less.
+    while value > 21 and num_aces > 0:
+        value -= 10
+        num_aces -= 1
+
+    return value
+
+
+def hand_to_string(hand, hide_dealer_card=False):
+    """Converts a list of cards into a visually appealing string."""
+    if hide_dealer_card:
+        # Shows the back of the first card and the face of the second
+        return f"`[?]` ` {SUITS[hand[1][0]]} {hand[1][1]} `"
+
+    # Joins all cards in hand into a single string
+    return " ".join([f"` {SUITS[card[0]]} {card[1]} `" for card in hand])
+
+
+async def end_blackjack_game(interaction: discord.Interaction, result: str):
+    """
+    Finalizes the game, calculates winnings, updates the wallet,
+    edits the final message, and cleans up the game state.
+    """
+    user_id = interaction.user.id
+    if user_id not in active_blackjack_games:
+        return  # Game has already been cleaned up
+
+    game = active_blackjack_games[user_id]
+    bet = game['bet']
+
+    player_value = calculate_hand_value(game['player_hand'])
+    dealer_value = calculate_hand_value(game['dealer_hand'])
+
+    final_embed = interaction.message.embeds[0]
+    final_embed.clear_fields()  # Remove old fields to show the final result
+
+    # Display both hands fully revealed
+    final_embed.add_field(name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
+                          inline=False)
+    final_embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(game['player_hand']), inline=False)
+
+    wallet_updated = False
+    reason_suffix = f" (bet: {bet})"
+
+    if result == 'blackjack':
+        winnings = int(bet * 1.5)
+        # Player's bet was already taken, so we add back the original bet + winnings
+        if update_wordbomb_wallet(user_id, bet + winnings, "coin", "add", "blackjack win" + reason_suffix):
+            wallet_updated = True
+        final_embed.title = "BLACKJACK! You Win!"
+        final_embed.color = discord.Color.gold()
+        final_embed.description = f"A natural 21 pays 3:2! You won **{winnings:,}** 🪙!"
+    elif result == 'win':
+        # Player's bet was taken, so we add back double the bet (original bet + winnings)
+        if update_wordbomb_wallet(user_id, bet * 2, "coin", "add", "blackjack win" + reason_suffix):
+            wallet_updated = True
+        final_embed.title = "You Win!"
+        final_embed.color = discord.Color.green()
+        final_embed.description = f"You won **{bet:,}** 🪙!"
+    elif result == 'push':
+        # Bet is returned to the player
+        if update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack push" + reason_suffix):
+            wallet_updated = True
+        final_embed.title = "Push"
+        final_embed.color = discord.Color.light_grey()
+        final_embed.description = "It's a tie! Your bet has been returned."
+    elif result in ('bust', 'loss'):
+        wallet_updated = True  # The bet was already subtracted, so the transaction is complete
+        final_embed.title = "You Lose"
+        final_embed.color = discord.Color.red()
+        final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
+    elif result == 'timeout':
+        wallet_updated = True
+        final_embed.title = "Game Timed Out"
+        final_embed.color = discord.Color.dark_grey()
+        final_embed.description = f"You lost your bet of **{bet:,}** 🪙 due to inactivity."
+
+    if not wallet_updated:
+        # This is a fallback in case the API fails during the payout
+        final_embed.description = "A server error occurred while processing your winnings. Your original bet has been refunded."
+        update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack error refund" + reason_suffix)
+
+    # Clean up the active game state
+    del active_blackjack_games[user_id]
+
+    # Edit the original message with the final results and remove the buttons (view=None)
+    await interaction.message.edit(embed=final_embed, view=None)
+
+
+# --- BLACKJACK INTERACTIVE VIEW ---
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=120.0)  # Game times out after 2 minutes of inactivity
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Ensures that only the user who started the game can use the buttons."""
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        """Handles the game when the user is AFK."""
+        if self.author_id in active_blackjack_games:
+            game = active_blackjack_games[self.author_id]
+            channel = bot.get_channel(game['channel_id'])
+            if channel:
+                try:
+                    # We create a lightweight object that mimics an interaction
+                    # so we can reuse our end_game function.
+                    class DummyInteraction:
+                        def __init__(self, user, message):
+                            self.user = user
+                            self.message = message
+
+                    message = await channel.fetch_message(game['message_id'])
+                    user = bot.get_user(self.author_id)
+                    dummy_interaction = DummyInteraction(user, message)
+
+                    await end_blackjack_game(dummy_interaction, 'timeout')
+                except discord.NotFound:
+                    # Message was deleted, just clean up state
+                    del active_blackjack_games[self.author_id]
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
+    async def hit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Gives the player another card."""
+        game = active_blackjack_games[self.author_id]
+        game['player_hand'].append(game['deck'].pop())
+        player_value = calculate_hand_value(game['player_hand'])
+
+        if player_value > 21:
+            await end_blackjack_game(interaction, 'bust')
+        else:
+            embed = interaction.message.embeds[0]
+            embed.set_field_at(1, name=f"Your Hand ({player_value})", value=hand_to_string(game['player_hand']),
+                               inline=False)
+
+            # If player hits 21, their turn is automatically over.
+            if player_value == 21:
+                button.disabled = True
+                self.children[1].disabled = True  # Disable stand button
+                await interaction.response.edit_message(embed=embed, view=self)
+                await self.dealer_turn(interaction)
+            else:
+                await interaction.response.edit_message(embed=embed)
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, custom_id="bj_stand")
+    async def stand_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Ends the player's turn and starts the dealer's turn."""
+        button.disabled = True
+        self.children[0].disabled = True  # Disable hit button
+        await interaction.response.edit_message(view=self)
+        await self.dealer_turn(interaction)
+
+    async def dealer_turn(self, interaction: discord.Interaction):
+        """Reveals the dealer's hand and plays out their turn according to standard rules."""
+        game = active_blackjack_games[self.author_id]
+        embed = interaction.message.embeds[0]
+
+        # Reveal dealer's hidden card and update hand value
+        dealer_value = calculate_hand_value(game['dealer_hand'])
+        embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
+                           inline=False)
+        await interaction.message.edit(embed=embed)
+
+        # Dealer must hit until their hand value is 17 or higher
+        while calculate_hand_value(game['dealer_hand']) < 17:
+            game['dealer_hand'].append(game['deck'].pop())
+            dealer_value = calculate_hand_value(game['dealer_hand'])
+            embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
+                               inline=False)
+            await interaction.message.edit(embed=embed)
+
+        # Determine the winner
+        player_value = calculate_hand_value(game['player_hand'])
+        dealer_value = calculate_hand_value(game['dealer_hand'])
+
+        if dealer_value > 21:
+            await end_blackjack_game(interaction, 'win')  # Dealer busts
+        elif dealer_value > player_value:
+            await end_blackjack_game(interaction, 'loss')
+        elif player_value > dealer_value:
+            await end_blackjack_game(interaction, 'win')
+        else:
+            await end_blackjack_game(interaction, 'push')
+
+
+# --- BLACKJACK COMMAND ---
+
+@bot.command(name="bj", aliases=["blackjack"])
+async def blackjack(ctx: commands.Context, amount: int):
+    """Starts a game of Blackjack for coins."""
+    author = ctx.author
+
+    if author.id in active_blackjack_games:
+        await ctx.send("You're already in a game of blackjack! Finish that one first.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await ctx.send("You must bet a positive amount of coins.", ephemeral=True)
+        return
+
+    MAX_BET = 100000
+    if amount > MAX_BET:
+        await ctx.send(f"The maximum bet for blackjack is **{MAX_BET:,}** 🪙.")
+        return
+
+    wallet = get_cached_wallet(author.id)
+    if "error" in wallet:
+        await ctx.send(f"Error fetching your wallet: {wallet['error']}", ephemeral=True)
+        return
+
+    if wallet.get("coin", 0) < amount:
+        await ctx.send(f"You don't have enough coins! You need **{amount:,}** 🪙 to make that bet.", ephemeral=True)
+        return
+
+    # Subtract the bet from the player's wallet before the game starts
+    if not update_wordbomb_wallet(author.id, amount, "coin", "subtract", f"blackjack bet ({amount})"):
+        await ctx.send("A server error occurred while placing your bet. Please try again.", ephemeral=True)
+        return
+
+    # Update local cache to reflect the bet
+    if author.id in wallet_cache:
+        wallet_cache[author.id]['data']['coin'] -= amount
+
+    # Set up the game deck and deal initial cards
+    deck = create_deck()
+    player_hand = [deck.pop(), deck.pop()]
+    dealer_hand = [deck.pop(), deck.pop()]
+    player_value = calculate_hand_value(player_hand)
+    dealer_value = calculate_hand_value(dealer_hand)
+
+    # Create the embed and interactive view
+    embed = discord.Embed(
+        title=f"{author.display_name}'s Blackjack Game",
+        color=0x2E3136  # Dark theme color
+    )
+    embed.add_field(name="Dealer's Hand (?)", value=hand_to_string(dealer_hand, hide_dealer_card=True), inline=False)
+    embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(player_hand), inline=False)
+    embed.set_footer(text=f"Your Bet: {amount:,} coins")
+
+    view = BlackjackView(author.id)
+    game_message = await ctx.send(embed=embed, view=view)
+
+    # Store the game state in the active games dictionary
+    active_blackjack_games[author.id] = {
+        "deck": deck, "player_hand": player_hand, "dealer_hand": dealer_hand,
+        "bet": amount, "message_id": game_message.id, "channel_id": ctx.channel.id,
+    }
+
+    # Check for an immediate Blackjack (natural 21)
+    player_has_bj = player_value == 21
+    dealer_has_bj = dealer_value == 21
+
+    if player_has_bj or dealer_has_bj:
+        # Stop the view from being interactive as the game is over
+        view.stop()
+
+        class DummyInteraction:
+            def __init__(self, user, message): self.user, self.message = user, message
+
+        dummy_interaction = DummyInteraction(author, game_message)
+
+        if player_has_bj and not dealer_has_bj:
+            await end_blackjack_game(dummy_interaction, 'blackjack')
+        elif dealer_has_bj and not player_has_bj:
+            await end_blackjack_game(dummy_interaction, 'loss')
+        else:  # Both have blackjack
+            await end_blackjack_game(dummy_interaction, 'push')
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
