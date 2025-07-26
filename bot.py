@@ -1,5 +1,5 @@
 import discord
-from discord import app_commands, ui
+from discord import ui
 from discord.ext import commands, tasks
 from discord.ui import Modal, TextInput, Select
 import logging
@@ -11,16 +11,33 @@ import datetime
 import time
 from datetime import datetime, timedelta
 import motor.motor_asyncio
+import requests
+import asyncio
 
 # Load token
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+
+WORDBOMB_SERVER_TOKEN = os.getenv('WORDBOMB_SERVER_TOKEN')
+TRADE_CHANNEL_ID = 1386293640867090482
+
+WORDBOMB_API_BASE = os.getenv("WORDBOMB_API_BASE")
+BILL_CREATE_ENDPOINT = os.getenv("WORDBOMB_BILL_CREATE_ENDPOINT")
+WALLET_ENDPOINT = os.getenv("WORDBOMB_WALLET_ENDPOINT")
 
 # --- New Constants ---
 # Ask Hector for this connection string and put it in your .env file
 MONGO_URI = os.getenv('MONGO_URI')
 # ID of the private channel where suggestions will be sent for approval
 APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
+
+# A simple in-memory dictionary to act as our local cache
+# Structure: { user_id: { "data": { ... wallet ... }, "timestamp": 12345.67 } }
+wallet_cache = {}
+# Cache duration in seconds (10 minutes * 60 seconds/minute)
+CACHE_DURATION_SECONDS = 10 * 60
+
+active_coinflips = set()
 
 # --- MongoDB Setup ---
 client = None
@@ -226,6 +243,17 @@ async def on_ready():
             )
         """)
 
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS active_trades (
+                message_id INTEGER PRIMARY KEY,
+                seller_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                currency_type TEXT NOT NULL
+            )
+        """)
+
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -265,6 +293,10 @@ async def on_ready():
 
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
+    bot.add_view(TradeView())  # <-- ADD THIS LINE
+
+    # 2. Add the new slash command group to the bot's command tree.
+
     print("[SUCCESS] Bot is ready and persistent views are registered.")
 
 @tasks.loop(hours=1)
@@ -1071,6 +1103,32 @@ async def setup_suggestions(ctx):
     await target_channel.send(embed=embed, view=SuggestionStarterView())
     await ctx.send(f"✅ Suggestion button message has been sent to {target_channel.mention}.")
 
+# Cache wallet
+def get_cached_wallet(user_id: int) -> dict:
+    """
+    Fetches a user's wallet, prioritizing a local cache.
+    If the cache is old or doesn't exist, it fetches from the live API.
+    """
+    now = time.time()
+    user_id_str = str(user_id)
+
+    # 1. Check if a fresh entry exists in our cache
+    if user_id in wallet_cache and (now - wallet_cache[user_id]['timestamp']) < CACHE_DURATION_SECONDS:
+        print(f"[CACHE] Wallet cache HIT for user {user_id_str}")
+        return wallet_cache[user_id]['data']
+
+    # 2. If not, fetch from the live API (a cache "miss")
+    print(f"[CACHE] Wallet cache MISS for user {user_id_str}. Fetching from API.")
+    live_wallet_data = get_wordbomb_wallet(user_id)  # This calls your existing helper
+
+    # 3. If the API call was successful, update our cache
+    if "error" not in live_wallet_data:
+        wallet_cache[user_id] = {
+            "data": live_wallet_data,
+            "timestamp": now
+        }
+
+    return live_wallet_data
 
 class ApprovalView(ui.View):
     def __init__(self):
@@ -1311,6 +1369,349 @@ class TicketStarterView(ui.View):
 
         await interaction.followup.send(f"Your ticket has been created: {new_channel.mention}", ephemeral=True)
 
+# Trading
+def get_wordbomb_wallet(user_id: int) -> dict:
+    """Fetches a user's wallet from the Word Bomb API."""
+    if not WORDBOMB_SERVER_TOKEN:
+        return {"error": "API token not configured."}
+
+    api_url = f"{WORDBOMB_API_BASE}{WALLET_ENDPOINT}/{user_id}"
+    headers = {"Authorization": f"Bearer {WORDBOMB_SERVER_TOKEN}"}
+
+    try:
+        response = requests.get(api_url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"API returned status {response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Network error: {e}"}
+
+
+def update_wordbomb_wallet(user_id: int, amount: int, currency_type: str, operation: str, reason: str) -> bool:
+    """Updates a user's wallet using the Word Bomb API. Returns True on success."""
+    if not WORDBOMB_SERVER_TOKEN:
+        print("[ERROR] Word Bomb server token not configured.")
+        return False
+
+    user_id_str = str(user_id)
+
+    api_url = f"{WORDBOMB_API_BASE}{BILL_CREATE_ENDPOINT}"
+    headers = {"Authorization": f"Bearer {WORDBOMB_SERVER_TOKEN}"}
+    payload = {
+        "target": user_id_str,
+        "amount": amount,
+        "type": currency_type,  # "gem" or "coin"
+        "operation": operation,  # "add", "subtract", or "set"
+        "reason": reason
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload)
+        if response.status_code == 200:
+            print(f"[TRADE] Successfully executed bill: {user_id} {operation} {amount} {currency_type} for {reason}")
+            return True
+        else:
+            print(f"[ERROR] Bill creation failed with status {response.status_code}: {response.text}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Network error during bill creation: {e}")
+        return False
+
+
+class TradeOfferModal(Modal, title="Create New Trade Offer"):
+    def __init__(self):
+        super().__init__()
+        # These are the correct variable names
+        self.item_type_input = TextInput(label="Item Type", placeholder="syllable or discovery", required=True,
+                                         max_length=10)
+        self.add_item(self.item_type_input)
+
+        self.item_name_input = TextInput(label="Item Name", placeholder="e.g., 'inter' or 'quintessential'",
+                                         required=True, max_length=50)
+        self.add_item(self.item_name_input)
+
+        self.price_input = TextInput(label="Price", placeholder="e.g., 100", required=True, max_length=10)
+        self.add_item(self.price_input)
+
+        self.currency_type_input = TextInput(label="Currency", placeholder="coin or gem", required=True, max_length=5)
+        self.add_item(self.currency_type_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # --- THIS IS THE CORRECTED LOGIC ---
+
+        # 1. Use the correct variable names (e.g., item_type_input)
+        # 2. Use .value to get the text from a TextInput, not .values[0]
+        item_type = self.item_type_input.value.lower().strip()
+        if item_type not in ["syllable", "discovery"]:
+            return await interaction.response.send_message("Invalid Item Type. Please enter `syllable` or `discovery`.",
+                                                           ephemeral=True)
+
+        currency_type = self.currency_type_input.value.lower().strip()
+        if currency_type not in ["coin", "gem"]:
+            return await interaction.response.send_message("Invalid Currency. Please enter `coin` or `gem`.",
+                                                           ephemeral=True)
+
+        try:
+            price = int(self.price_input.value)
+            if price <= 0: raise ValueError()
+        except ValueError:
+            return await interaction.response.send_message("Invalid price. Please enter a positive whole number.",
+                                                           ephemeral=True)
+
+        # The rest of the logic was already correct
+        item_name = self.item_name_input.value
+        seller = interaction.user
+
+        currency_emoji = "💎" if currency_type == "gem" else "🪙"
+        embed_color = 0x00e1ff if currency_type == "gem" else 0xffd700
+
+        embed = discord.Embed(
+            title=f"New {item_type.capitalize()} for Sale!",
+            description=f"**Item:** `{item_name}`",
+            color=embed_color
+        )
+        embed.set_author(name=f"{seller.display_name}'s Offer", icon_url=seller.display_avatar.url)
+        embed.add_field(name="Price", value=f"**{price:,}** {currency_emoji}")
+        embed.set_footer(text=f"Seller ID: {seller.id}")
+
+        trade_channel = bot.get_channel(TRADE_CHANNEL_ID)
+        if not trade_channel:
+            return await interaction.response.send_message("Error: Trade channel not found.", ephemeral=True)
+
+        offer_message = await trade_channel.send(embed=embed, view=TradeView())
+
+        async with aiosqlite.connect("server_data.db") as db:
+            await db.execute(
+                "INSERT INTO active_trades (message_id, seller_id, item_type, item_name, price, currency_type) VALUES (?, ?, ?, ?, ?, ?)",
+                (offer_message.id, seller.id, item_type, item_name, price, currency_type)
+            )
+            await db.commit()
+
+        await interaction.response.send_message(f"Your trade offer has been posted in {trade_channel.mention}!",
+                                                ephemeral=True)
+
+# This is the persistent view with the "Buy" button
+class TradeView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label='Buy Item', style=discord.ButtonStyle.green, custom_id='buy_trade_item')
+    async def buy_button(self, interaction: discord.Interaction, button: ui.Button):
+        buyer = interaction.user
+        message = interaction.message
+
+        # 1. Fetch trade details from our database
+        async with aiosqlite.connect("server_data.db") as db:
+            cursor = await db.execute("SELECT * FROM active_trades WHERE message_id = ?", (message.id,))
+            trade_data = await cursor.fetchone()
+
+        if not trade_data:
+            return await interaction.response.send_message("This item has already been sold or the offer has expired.",
+                                                           ephemeral=True)
+
+        # Unpack the trade data
+        seller_id, item_type, item_name, price, currency_type = trade_data[1], trade_data[2], trade_data[3], trade_data[
+            4], trade_data[5]
+
+        # 2. Prevent user from buying their own item
+        if buyer.id == seller_id:
+            return await interaction.response.send_message("You cannot buy your own item.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)  # Acknowledge the interaction, gives us more time
+
+        # 3. Verify buyer's wallet
+        buyer_wallet = get_wordbomb_wallet(buyer.id)
+        if "error" in buyer_wallet or buyer_wallet.get(currency_type, 0) < price:
+            return await interaction.followup.send("You do not have enough funds to purchase this item.",
+                                                   ephemeral=True)
+
+        # 4. Perform the transaction
+        # Subtract from buyer
+        buyer_subtract_success = update_wordbomb_wallet(buyer.id, price, currency_type, "subtract",
+                                                        f"market purchase of {item_name}")
+        if not buyer_subtract_success:
+            return await interaction.followup.send("An error occurred while processing your payment. Please try again.",
+                                                   ephemeral=True)
+
+        # Add to seller
+        seller_add_success = update_wordbomb_wallet(seller_id, price, currency_type, "add",
+                                                    f"market sale of {item_name}")
+        if not seller_add_success:
+            # Critical error: Buyer was charged but seller wasn't paid. We must revert the buyer's payment.
+            print(f"[CRITICAL] Failed to pay seller {seller_id}. Reverting payment for buyer {buyer.id}.")
+            update_wordbomb_wallet(buyer.id, price, currency_type, "add", "market purchase refund")
+            return await interaction.followup.send(
+                "A critical error occurred with the seller's payment. Your payment has been refunded.", ephemeral=True)
+
+        # 5. Transaction successful, clean up
+        async with aiosqlite.connect("server_data.db") as db:
+            await db.execute("DELETE FROM active_trades WHERE message_id = ?", (message.id,))
+            await db.commit()
+
+        # 6. Update the original message to show "SOLD"
+        original_embed = message.embeds[0]
+        sold_embed = original_embed
+        sold_embed.title = f"SOLD: {item_type.capitalize()} was Purchased!"
+        sold_embed.color = 0x808080  # Grey
+        sold_embed.add_field(name="Buyer", value=buyer.mention, inline=False)
+
+        self.buy_button.disabled = True
+        self.buy_button.label = "SOLD"
+
+        await message.edit(embed=sold_embed, view=self)
+        await interaction.followup.send(f"You successfully purchased `{item_name}`!", ephemeral=True)
+
+
+class StartTradeOfferView(ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=180)  # The button will work for 3 minutes
+        self.author_id = author_id
+
+    # This check ensures only the person who ran the command can use the button
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This button is not for you.", ephemeral=True)
+            return False
+        return True
+
+    # When the button is clicked, it opens the modal
+    @ui.button(label="Post Trade Offer", style=discord.ButtonStyle.green)
+    async def post_offer_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(TradeOfferModal())
+
+    # This function will disable the button after the view times out
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        # We need to get the original message to edit it
+        # Since we don't have it directly, we can't edit it. The button will just stop working.
+
+
+@bot.command(name="tradepost")
+async def post_trade(ctx: commands.Context):
+    """Sends a message with a button to open the trade offer modal."""
+
+    # Create an instance of our new view, passing the command author's ID
+    view = StartTradeOfferView(author_id=ctx.author.id)
+
+    # Send a message that is only visible to the user who ran the command
+    await ctx.send(
+        "Click the button below to create your trade offer.",
+        view=view,
+        ephemeral=True
+    )
+
+@bot.command(name="testaddcoins")
+async def test_add_coins(ctx):
+    target_id = "265196052192165888"  # Target user ID as a string
+    result = update_wordbomb_wallet(target_id, 100, "coin", "add", "test-add-coins")
+
+    if result:
+        await ctx.send("✅ 100 coins successfully added to the target user.")
+    else:
+        await ctx.send("❌ Failed to add coins to the target user.")
+
+# Coinflip
+@bot.command(name="cf", aliases=["coinflip"])
+async def coinflip(ctx: commands.Context, amount: int):
+    """Gamble your coins with a multi-stage animation and a user-specific cooldown."""
+
+    author = ctx.author
+
+    if author.id in active_coinflips:
+        return await ctx.send("You already have a coinflip in progress! Please wait for it to finish.", ephemeral=True)
+
+    active_coinflips.add(author.id)
+
+    try:
+        MAX_BET = 100000
+        if amount <= 0:
+            await ctx.send("Please enter a positive amount of coins to bet.")
+            return
+        if amount > MAX_BET:
+            await ctx.send(f"You can only bet a maximum of **{MAX_BET:,}** 🪙 at a time!")
+            return
+
+        wallet = get_cached_wallet(author.id)
+        if "error" in wallet:
+            await ctx.send(f"Sorry, I couldn't fetch your wallet. Error: {wallet['error']}")
+            return
+
+        current_coins = wallet.get("coin", 0)
+        if current_coins < amount:
+            await ctx.send(f"You don't have enough coins! You only have **{current_coins:,}** 🪙.")
+            return
+
+        # STAGE 1: Send the flipping GIF
+        flipping_embed = discord.Embed(
+            title=f"{author.display_name}'s Coinflip...",
+            color=discord.Color.blue()
+        ).set_image(url="https://discord.wordbomb.io/coin_flip.gif?v=2")
+        result_message = await ctx.send(embed=flipping_embed)
+
+        await asyncio.sleep(3.0)
+
+        # Logic & API Calls
+        if random.randint(1, 100) <= 45:
+            result = "win"
+            operation = "add"
+            reason = "coinflip win"
+            new_balance = current_coins + amount
+            result_image_url = "https://discord.wordbomb.io/coin_win.png?v=2"
+        else:
+            result = "loss"
+            operation = "subtract"
+            reason = "coinflip loss"
+            new_balance = current_coins - amount
+            result_image_url = "https://discord.wordbomb.io/coin_lost.png?v=2"
+
+        success = update_wordbomb_wallet(author.id, amount, "coin", operation, reason)
+
+        if not success:
+            error_embed = discord.Embed(title="Server Error",
+                                        description="An error occurred with the game server. Your balance was not changed.",
+                                        color=discord.Color.orange())
+            await result_message.edit(embed=error_embed)
+            return
+
+        # Update local cache
+        if author.id in wallet_cache:
+            wallet_cache[author.id]['data']['coin'] = new_balance
+            wallet_cache[author.id]['timestamp'] = time.time()
+
+        # STAGE 2: Show the static win/loss image
+        static_result_embed = discord.Embed(
+            title="The coin has landed!",
+            color=discord.Color.green() if result == "win" else discord.Color.red()
+        ).set_image(url=result_image_url)
+        await result_message.edit(embed=static_result_embed)
+
+        await asyncio.sleep(1)
+
+        # --- THIS IS THE ADJUSTED LOGIC ---
+        # STAGE 3: Modify the existing embed instead of creating a new one.
+
+        # We take the embed from Stage 2 and add the final details to it.
+        final_embed = static_result_embed
+
+        if result == "win":
+            final_embed.title = "🎉 You Won! 🎉"
+            final_embed.description = f"You won **{amount:,}** 🪙!"
+        else:  # loss
+            final_embed.title = "😭 You Lost! 😭"
+            final_embed.description = f"You lost **{amount:,}** 🪙."
+
+        final_embed.set_author(name=f"{author.display_name}'s Coinflip", icon_url=author.display_avatar.url)
+        final_embed.add_field(name="Your Bet", value=f"{amount:,} 🪙")
+        final_embed.add_field(name="New Balance", value=f"{new_balance:,} 🪙")
+        # The main image is already set from Stage 2, so we don't need to add it again.
+
+
+        await result_message.edit(embed=final_embed)
+
+    finally:
+        active_coinflips.remove(author.id)
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
