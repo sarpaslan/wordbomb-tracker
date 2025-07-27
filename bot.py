@@ -1387,35 +1387,35 @@ class TicketStarterView(ui.View):
 
 async def calculate_total_coins_from_stats(user_id: int) -> int:
     """
-    Calculates a user's total coin balance by converting all their historical stats.
+    Calculates a user's total coin balance by converting all their historical stats
+    using the NEW proportions.
     """
     total_coins = 0
 
     # 1. Calculate from SQLite stats (Messages, Bugs, Ideas, Voice)
     async with aiosqlite.connect("server_data.db") as db:
-        # Messages: 1 coin per message
+        # Messages: 70 coins per message
         msg_cursor = await db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,))
         if msg_row := await msg_cursor.fetchone():
-            total_coins += msg_row[0] * 1
+            total_coins += msg_row[0] * 70
 
-        # Bug Reports: 150 coins per report
+        # Bug Reports: 45,000 coins per report
         bug_cursor = await db.execute("SELECT count FROM bug_points WHERE user_id = ?", (user_id,))
         if bug_row := await bug_cursor.fetchone():
-            total_coins += bug_row[0] * 150
+            total_coins += bug_row[0] * 45000
 
-        # Ideas: 100 coins per idea
+        # Ideas: 34,000 coins per idea
         idea_cursor = await db.execute("SELECT count FROM idea_points WHERE user_id = ?", (user_id,))
         if idea_row := await idea_cursor.fetchone():
-            total_coins += idea_row[0] * 100
+            total_coins += idea_row[0] * 34000
 
-        # Voice Time: 20 coins per hour
+        # Voice Time: 2,000 coins per hour
         voice_cursor = await db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,))
         if voice_row := await voice_cursor.fetchone():
             hours = voice_row[0] / 3600
-            total_coins += int(hours * 20)
+            total_coins += int(hours * 2000)
 
     # 2. Calculate from MongoDB stats (Trivia Questions)
-    # --- THIS IS THE CORRECTED LINE ---
     if questions_collection is not None:
         pipeline = [
             {"$unionWith": {"coll": "rejected"}},
@@ -1426,7 +1426,8 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
             result = await questions_collection.aggregate(pipeline).to_list(length=1)
             if result:
                 suggestion_count = result[0]['total_suggestions']
-                total_coins += suggestion_count * 100
+                # Trivia: 35,000 coins per suggestion
+                total_coins += suggestion_count * 35000
         except Exception as e:
             print(f"[ERROR] Could not fetch trivia stats for {user_id}: {e}")
 
