@@ -1491,7 +1491,7 @@ async def coinflip(ctx: commands.Context, amount: int):
     # Get the user's total effective balance
     current_balance = await get_effective_balance(author.id)
     if current_balance < amount:
-        return await ctx.send(f"You don't have enough coins! You only have **{current_balance:,}** 🪙.", ephemeral=True)
+        return await ctx.send(f"You don't have enough coins! You only have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
 
     # Lock the user at the very beginning
     active_coinflips.add(author.id)
@@ -1802,7 +1802,7 @@ async def blackjack(ctx: commands.Context, amount: int):
     # Get the user's total effective balance
     current_balance = await get_effective_balance(author.id)
     if current_balance < amount:
-        return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** 🪙.", ephemeral=True)
+        return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
 
     # --- The rest of the game setup logic remains the same ---
     # (create deck, deal cards, create embed, send message, check for natural blackjack)
@@ -1813,7 +1813,7 @@ async def blackjack(ctx: commands.Context, amount: int):
     embed = discord.Embed(title=f"{author.display_name}'s Blackjack Game", color=0x2E3136)
     embed.add_field(name="Dealer's Hand (?)", value=hand_to_string(dealer_hand, hide_dealer_card=True), inline=False)
     embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(player_hand), inline=False)
-    embed.set_footer(text=f"Your Bet: {amount:,} coins")
+    embed.set_footer(text=f"Your Bet: {amount:,} <:wbcoin:1398780929664745652>")
     view = BlackjackView(author.id)
     game_message = await ctx.send(embed=embed, view=view)
     active_blackjack_games[author.id] = { "deck": deck, "player_hand": player_hand, "dealer_hand": dealer_hand, "bet": amount, "message_id": game_message.id, "channel_id": ctx.channel.id }
