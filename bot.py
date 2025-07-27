@@ -1995,7 +1995,7 @@ async def blackjack(ctx: commands.Context, amount: int):
         await ctx.send("You must bet a positive amount of coins.", ephemeral=True)
         return
 
-    MAX_BET = 100000
+    MAX_BET = 50000
     if amount > MAX_BET:
         await ctx.send(f"The maximum bet for blackjack is **{MAX_BET:,}** 🪙.")
         return
