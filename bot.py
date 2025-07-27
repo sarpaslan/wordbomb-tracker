@@ -701,8 +701,8 @@ async def get_coins_leaderboard_data() -> list:
         message_coins = stats["messages"] * 70
         bug_coins = stats["bugs"] * 45000
         idea_coins = stats["ideas"] * 34000
-        voice_coins = int((stats["voice_seconds"] / 3600) * 2000)
-        trivia_coins = stats["trivia"] * 35000
+        voice_coins = int((stats["voice_seconds"] / 3600) * 4000)
+        trivia_coins = stats["trivia"] * 30000
         total_coins = message_coins + bug_coins + idea_coins + voice_coins + trivia_coins + stats["adjustment"]
         if total_coins > 0:
             leaderboard_entries.append((user_id, total_coins))
@@ -1413,7 +1413,7 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
         voice_cursor = await db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,))
         if voice_row := await voice_cursor.fetchone():
             hours = voice_row[0] / 3600
-            total_coins += int(hours * 2000)
+            total_coins += int(hours * 4000)
 
     # 2. Calculate from MongoDB stats (Trivia Questions)
     if questions_collection is not None:
@@ -1427,7 +1427,7 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
             if result:
                 suggestion_count = result[0]['total_suggestions']
                 # Trivia: 35,000 coins per suggestion
-                total_coins += suggestion_count * 35000
+                total_coins += suggestion_count * 30000
         except Exception as e:
             print(f"[ERROR] Could not fetch trivia stats for {user_id}: {e}")
 
