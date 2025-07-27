@@ -845,7 +845,15 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         display_points = f"{author_points // 3600}h {(author_points % 3600) // 60}m {author_points % 60}s" if category == "voice" else f"{author_points} {unit}"
         lines.append(f"...\n➤ {author_rank}. {username} • **{display_points}**")
     description = "\n".join(lines) if lines else "This leaderboard is currently empty!"
-    embed = discord.Embed(title=f"🏆 {category.capitalize()} Leaderboard", description=description,
+
+    if category == "coins":
+        # If the category is "coins", use your custom emoji string.
+        embed_title = f"🏆 <:wbcoin:1398780929664745652> leaderboard"
+    else:
+        # Otherwise, use the default title format.
+        embed_title = f"🏆 {category.capitalize()} Leaderboard"
+
+    embed = discord.Embed(title=embed_title, description=description,
                           color=discord.Color.gold())
     view = LeaderboardView(author_id, category, 1, 1, full_rows)
     if isinstance(ctx_or_interaction, discord.Interaction):
@@ -1520,10 +1528,10 @@ async def coinflip(ctx: commands.Context, amount: int):
         await asyncio.sleep(1)
 
         final_embed.title = "🎉 You Won! 🎉" if won else "😭 You Lost! 😭"
-        final_embed.description = f"You won **{amount:,}** 🪙!" if won else f"You lost **{amount:,}** 🪙."
+        final_embed.description = f"You won **{amount:,}** <:wbcoin:1398780929664745652>!" if won else f"You lost **{amount:,}** <:wbcoin:1398780929664745652>."
         final_embed.set_author(name=f"{author.display_name}'s Coinflip", icon_url=author.display_avatar.url)
-        final_embed.add_field(name="Your Bet", value=f"{amount:,} 🪙")
-        final_embed.add_field(name="New Balance", value=f"{new_balance:,} 🪙")
+        final_embed.add_field(name="Your Bet", value=f"{amount:,} <:wbcoin:1398780929664745652>")
+        final_embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>")
         await result_message.edit(embed=final_embed)
 
     finally:
@@ -1592,12 +1600,12 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
         net_change += bet + int(bet * 1.5)  # Win original bet back + 1.5x winnings
         final_embed.title = "🎉 BLACKJACK! 🎉"
         final_embed.color = discord.Color.gold()
-        final_embed.description = f"A natural 21 pays 3:2! You won **{int(bet * 1.5):,}** 🪙!"
+        final_embed.description = f"A natural 21 pays 3:2! You won **{int(bet * 1.5):,}** <:wbcoin:1398780929664745652>!"
     elif result == 'win':
         net_change += bet * 2  # Win original bet back + 1x winnings
         final_embed.title = "✅ You Win! ✅"
         final_embed.color = discord.Color.green()
-        final_embed.description = f"You won **{bet:,}** 🪙!"
+        final_embed.description = f"You won **{bet:,}** <:wbcoin:1398780929664745652>!"
     elif result == 'push':
         net_change += bet  # Win original bet back
         final_embed.title = "➖ Push ➖"
@@ -1607,7 +1615,7 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
         # net_change is already -bet
         final_embed.title = "❌ Bust! ❌"
         final_embed.color = discord.Color.dark_red()
-        final_embed.description = f"You went over 21 and lost your bet of **{bet:,}** 🪙."
+        final_embed.description = f"You went over 21 and lost your bet of **{bet:,}** <:wbcurrency:1398780929664745652>."
     else:  # 'loss' or 'timeout'
         # net_change is already -bet
         final_embed.title = "Game Timed Out" if result == 'timeout' else "You Lose"
