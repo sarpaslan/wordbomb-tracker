@@ -1535,12 +1535,16 @@ async def get_effective_balance(user_id: int) -> int:
 async def coinflip(ctx: commands.Context, amount: int):
     """Gamble your coins based on your total leaderboard stats."""
     author = ctx.author
+    MAX_VALUE = 100000
 
     if author.id in active_coinflips:
         return await ctx.send("You already have a coinflip in progress! Please wait for it to finish.", ephemeral=True)
 
     if amount <= 0:
         await ctx.send("Please enter a positive amount of coins to bet.", ephemeral=True)
+        return
+    if amount > MAX_VALUE:
+        await ctx.send("Maximum bettin is 100,000 <:wbcoin:1398780929664745652>!", ephemeral=True)
         return
 
     # Get the user's total effective balance
@@ -1554,7 +1558,7 @@ async def coinflip(ctx: commands.Context, amount: int):
     try:
 
         # --- All critical calculations happen BEFORE the unlock ---
-        win_chance = 45
+        win_chance = 50
         won = random.randint(1, 100) <= win_chance
         net_change = amount if won else -amount
         success = await modify_coin_adjustment(author.id, net_change)
