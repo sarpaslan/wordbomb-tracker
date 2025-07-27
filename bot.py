@@ -1466,6 +1466,8 @@ async def get_effective_balance(user_id: int) -> int:
     adjustment = await get_coin_adjustment(user_id)
     return stats_balance + adjustment
 
+
+
 # Coinflip
 @bot.command(name="cf", aliases=["coinflip"])
 async def coinflip(ctx: commands.Context, amount: int):
@@ -1563,7 +1565,7 @@ def hand_to_string(hand, hide_dealer_card=False):
 async def end_blackjack_game(interaction: discord.Interaction, result: str):
     """
     Finalizes the game, displays the final hands, calculates winnings,
-    updates the coin adjustment, and edits the final message.
+    updates the coin adjustment, shows the new balance, and edits the final message.
     """
     user_id = interaction.user.id
     if user_id not in active_blackjack_games:
@@ -1572,33 +1574,31 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
     game = active_blackjack_games[user_id]
     bet = game['bet']
 
-    # --- THIS IS THE NEW, CRUCIAL LOGIC ---
-    # Calculate final values and display both hands fully revealed.
-    # This ensures the user always sees the final state.
+    # Calculate final values for display
     player_value = calculate_hand_value(game['player_hand'])
     dealer_value = calculate_hand_value(game['dealer_hand'])
 
+    # Prepare the final embed
     final_embed = interaction.message.embeds[0]
-    final_embed.clear_fields()  # Remove old fields for a clean final state
-
+    final_embed.clear_fields()
     final_embed.add_field(name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']), inline=False)
     final_embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(game['player_hand']), inline=False)
-    # --- END OF NEW LOGIC ---
 
-    net_change = -bet  # Start with the initial bet loss
+    # Determine net change in coins
+    net_change = -bet  # Assume a loss by default
 
     if result == 'blackjack':
-        net_change += bet + int(bet * 1.5)  # Win bet back + 1.5x winnings
+        net_change += bet + int(bet * 1.5)  # Win original bet back + 1.5x winnings
         final_embed.title = "🎉 BLACKJACK! 🎉"
         final_embed.color = discord.Color.gold()
         final_embed.description = f"A natural 21 pays 3:2! You won **{int(bet * 1.5):,}** 🪙!"
     elif result == 'win':
-        net_change += bet * 2  # Win bet back + winnings
+        net_change += bet * 2  # Win original bet back + 1x winnings
         final_embed.title = "✅ You Win! ✅"
         final_embed.color = discord.Color.green()
         final_embed.description = f"You won **{bet:,}** 🪙!"
     elif result == 'push':
-        net_change += bet  # Get the bet back
+        net_change += bet  # Win original bet back
         final_embed.title = "➖ Push ➖"
         final_embed.color = discord.Color.light_grey()
         final_embed.description = "It's a tie! Your bet has been returned."
@@ -1613,12 +1613,19 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
         final_embed.color = discord.Color.dark_grey() if result == 'timeout' else discord.Color.red()
         final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
 
-    # Apply the single adjustment
+    # Apply the single adjustment to the database
     success = await modify_coin_adjustment(user_id, net_change)
     if not success:
+        # If the first write fails, try to refund the initial bet loss
         await modify_coin_adjustment(user_id, bet)
         final_embed.description = "A database error occurred. Your original bet has been refunded."
 
+    # Fetch the user's final, updated balance AFTER the game's transaction
+    new_balance = await get_effective_balance(user_id)
+    balance_field_name = "Current Balance" if not success else "New Balance"
+    final_embed.add_field(name=balance_field_name, value=f"{new_balance:,} 🪙", inline=False)
+
+    # Clean up and update the message
     del active_blackjack_games[user_id]
     await interaction.message.edit(embed=final_embed, view=None)
 
