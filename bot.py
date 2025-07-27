@@ -1785,44 +1785,64 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
 
     wallet_updated = False
     reason_suffix = f" (bet: {bet})"
+    payout_amount = 0 # This will hold the amount to add back to the wallet/cache
 
     if result == 'blackjack':
         winnings = int(bet * 1.5)
-        # Player's bet was already taken, so we add back the original bet + winnings
-        if update_wordbomb_wallet(user_id, bet + winnings, "coin", "add", "blackjack win" + reason_suffix):
+        payout_amount = bet + winnings # Player gets their original bet back + winnings
+        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack win" + reason_suffix):
             wallet_updated = True
         final_embed.title = "BLACKJACK! You Win!"
         final_embed.color = discord.Color.gold()
         final_embed.description = f"A natural 21 pays 3:2! You won **{winnings:,}** 🪙!"
+
     elif result == 'win':
-        # Player's bet was taken, so we add back double the bet (original bet + winnings)
-        if update_wordbomb_wallet(user_id, bet * 2, "coin", "add", "blackjack win" + reason_suffix):
+        payout_amount = bet * 2 # Player gets double their bet back
+        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack win" + reason_suffix):
             wallet_updated = True
         final_embed.title = "You Win!"
         final_embed.color = discord.Color.green()
         final_embed.description = f"You won **{bet:,}** 🪙!"
+
     elif result == 'push':
-        # Bet is returned to the player
-        if update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack push" + reason_suffix):
+        payout_amount = bet # Bet is returned to the player
+        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack push" + reason_suffix):
             wallet_updated = True
         final_embed.title = "Push"
         final_embed.color = discord.Color.light_grey()
         final_embed.description = "It's a tie! Your bet has been returned."
+
     elif result in ('bust', 'loss'):
         wallet_updated = True  # The bet was already subtracted, so the transaction is complete
         final_embed.title = "You Lose"
         final_embed.color = discord.Color.red()
         final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
+
     elif result == 'timeout':
         wallet_updated = True
         final_embed.title = "Game Timed Out"
         final_embed.color = discord.Color.dark_grey()
         final_embed.description = f"You lost your bet of **{bet:,}** 🪙 due to inactivity."
 
+    # --- THIS IS THE NEW CACHING LOGIC ---
+    # If the wallet was updated successfully via the API, update the local cache
+    if wallet_updated and payout_amount > 0 and user_id in wallet_cache:
+        wallet_cache[user_id]['data']['coin'] += payout_amount
+        wallet_cache[user_id]['timestamp'] = time.time()
+        print(f"[CACHE] Blackjack payout updated for user {user_id}")
+    # --- END OF NEW LOGIC ---
+
     if not wallet_updated:
         # This is a fallback in case the API fails during the payout
         final_embed.description = "A server error occurred while processing your winnings. Your original bet has been refunded."
-        update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack error refund" + reason_suffix)
+        # Attempt to refund the player
+        if update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack error refund" + reason_suffix):
+            # If the refund succeeds, update the cache
+            if user_id in wallet_cache:
+                wallet_cache[user_id]['data']['coin'] += bet
+                wallet_cache[user_id]['timestamp'] = time.time()
+                print(f"[CACHE] Blackjack error refund updated for user {user_id}")
+
 
     # Clean up the active game state
     del active_blackjack_games[user_id]
@@ -1940,8 +1960,36 @@ async def blackjack(ctx: commands.Context, amount: int):
     author = ctx.author
 
     if author.id in active_blackjack_games:
-        await ctx.send("You're already in a game of blackjack! Finish that one first.", ephemeral=True)
-        return
+        game_data = active_blackjack_games[author.id]
+        # Check if the game is older than 10 minutes (600 seconds)
+        if time.time() - game_data.get("start_time", 0) > 600:
+            await ctx.send(
+                "It looks like you had a previous game that was left unfinished. I'm clearing it up for you now. Please run the command again.",
+                ephemeral=True)
+
+            # Try to edit the old message to show it expired
+            try:
+                channel = bot.get_channel(game_data['channel_id'])
+                if channel:
+                    old_message = await channel.fetch_message(game_data['message_id'])
+                    expired_embed = old_message.embeds[0]
+                    expired_embed.title = "Game Expired"
+                    expired_embed.color = discord.Color.dark_grey()
+                    expired_embed.description = "This game was left inactive and has been cleared."
+                    await old_message.edit(embed=expired_embed, view=None)
+            except discord.NotFound:
+                # The old message was likely deleted, which is fine.
+                pass
+            except Exception as e:
+                print(f"[BLACKJACK_CLEANUP_ERROR] Could not edit old message for {author.id}: {e}")
+
+            # Delete the stale game entry and stop the command
+            del active_blackjack_games[author.id]
+            return
+        else:
+            # If the game is NOT stale, then tell them it's still active.
+            await ctx.send("You're already in a game of blackjack! Finish that one first.", ephemeral=True)
+            return
 
     if amount <= 0:
         await ctx.send("You must bet a positive amount of coins.", ephemeral=True)
