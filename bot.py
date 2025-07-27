@@ -857,12 +857,12 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                           color=discord.Color.gold())
 
     rate_map = {
-        "messages": "Each message gives 75 coins.",
-        "bugs": "Each approved bug report gives 50,000 coins.",
-        "ideas": "Each approved idea gives 40,000 coins.",
-        "voice": "Voice activity is worth 5,000 coins per hour.",
-        "trivia": "Each approved trivia question gives 20,000 coins.",
-        "coins": "The total of all coins earned from server activity."  # Footer for the main coins page
+        "messages": "Each message gives 75 <:wbcoin:1398780929664745652>.",
+        "bugs": "Each approved bug report gives 50,000 <:wbcoin:1398780929664745652>.",
+        "ideas": "Each approved idea gives 40,000 <:wbcoin:1398780929664745652>.",
+        "voice": "Voice activity is worth 5,000 <:wbcoin:1398780929664745652> per hour.",
+        "trivia": "Each approved trivia question gives 20,000 <:wbcoin:1398780929664745652>.",
+        "coins": "The total of all <:wbcoin:1398780929664745652> earned from server activity."  # Footer for the main coins page
     }
 
     # Get the correct footer text for the current category.
