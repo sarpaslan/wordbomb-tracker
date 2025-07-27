@@ -39,6 +39,7 @@ RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 1
 
 # This dictionary will hold all active games, with the user's ID as the key.
 active_blackjack_games = {}
+active_baccarat_games = {}
 
 # --- MongoDB Setup ---
 client = None
@@ -1614,6 +1615,8 @@ async def coinflip(ctx: commands.Context, amount: int):
         if author.id in active_coinflips:
             active_coinflips.remove(author.id)
 
+
+# Blackjack
 def create_deck():
     """Creates a standard 52-card deck and shuffles it."""
     deck = [(suit, rank) for suit in SUITS for rank in RANKS]
@@ -1885,6 +1888,207 @@ async def blackjack(ctx: commands.Context, amount: int):
         dummy_interaction = DummyInteraction(author, game_message)
         result = 'blackjack' if calculate_hand_value(dealer_hand) != 21 else 'push'
         await end_blackjack_game(dummy_interaction, result)
+
+# Baccarat
+def _calculate_baccarat_value(hand):
+    """Calculates the Baccarat value of a hand."""
+    value = 0
+    for _, rank in hand:
+        if rank in ['J', 'Q', 'K', '10']:
+            value += 0
+        elif rank == 'A':
+            value += 1
+        else:
+            value += int(rank)
+    return value % 10 # Baccarat value is the last digit of the sum
+
+# --- BACCARAT INTERACTIVE VIEW ---
+
+class BaccaratView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=120.0) # Game times out after 2 minutes
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Ensures only the user who started the game can use the buttons."""
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        """Handles the game when the user is AFK."""
+        if self.author_id in active_baccarat_games:
+            # Just clean up the game state, no need for complex resolution
+            del active_baccarat_games[self.author_id]
+            # Optionally, edit the message to show it expired
+            # (This part is omitted for simplicity but can be added)
+
+    @discord.ui.button(label="Player", style=discord.ButtonStyle.primary, custom_id="bac_player")
+    async def player_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _play_baccarat_hand(interaction, "Player")
+
+    @discord.ui.button(label="Banker", style=discord.ButtonStyle.danger, custom_id="bac_banker")
+    async def banker_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _play_baccarat_hand(interaction, "Banker")
+
+    @discord.ui.button(label="Tie", style=discord.ButtonStyle.green, custom_id="bac_tie")
+    async def tie_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _play_baccarat_hand(interaction, "Tie")
+
+
+async def _play_baccarat_hand(interaction: discord.Interaction, bet_on: str):
+    """The core logic for a round of Baccarat."""
+    user = interaction.user
+    if user.id not in active_baccarat_games:
+        await interaction.response.edit_message(content="This game has expired or could not be found.", view=None)
+        return
+
+    # Disable buttons to lock in the bet
+    view = BaccaratView(user.id)
+    view.clear_items()
+    await interaction.response.edit_message(view=view)
+
+    game_data = active_baccarat_games[user.id]
+    bet_amount = game_data['bet']
+    deck = game_data['deck']
+
+    # --- Initial Deal ---
+    player_hand = [deck.pop(), deck.pop()]
+    banker_hand = [deck.pop(), deck.pop()]
+    player_value = _calculate_baccarat_value(player_hand)
+    banker_value = _calculate_baccarat_value(banker_hand)
+
+    embed = interaction.message.embeds[0]
+    embed.description = f"You bet **{bet_amount:,}** 🪙 on **{bet_on}**.\nDealing the cards..."
+    embed.clear_fields()
+    embed.add_field(name="Player's Hand", value=hand_to_string(player_hand), inline=True)
+    embed.add_field(name="Banker's Hand", value=hand_to_string(banker_hand), inline=True)
+    await interaction.message.edit(embed=embed)
+    await asyncio.sleep(2)
+
+    # --- Third Card Drawing Logic ---
+    player_drew_card = False
+    player_third_card_value = None
+
+    # Check for a "Natural" win
+    if player_value >= 8 or banker_value >= 8:
+        pass  # No more cards are drawn
+    else:
+        # Player's turn to draw
+        if player_value <= 5:
+            player_drew_card = True
+            third_card = deck.pop()
+            player_hand.append(third_card)
+            player_third_card_value = _calculate_baccarat_value([third_card])
+            player_value = _calculate_baccarat_value(player_hand)
+            embed.set_field_at(0, name="Player's Hand", value=hand_to_string(player_hand), inline=True)
+            embed.description = "Player draws a third card..."
+            await interaction.message.edit(embed=embed)
+            await asyncio.sleep(2)
+
+        # Banker's turn to draw (most complex rules)
+        banker_draws = False
+        if not player_drew_card:  # If Player stood pat
+            if banker_value <= 5:
+                banker_draws = True
+        else:  # If Player drew a third card, follow the chart
+            if banker_value <= 2:
+                banker_draws = True
+            elif banker_value == 3 and player_third_card_value != 8:
+                banker_draws = True
+            elif banker_value == 4 and player_third_card_value in [2, 3, 4, 5, 6, 7]:
+                banker_draws = True
+            elif banker_value == 5 and player_third_card_value in [4, 5, 6, 7]:
+                banker_draws = True
+            elif banker_value == 6 and player_third_card_value in [6, 7]:
+                banker_draws = True
+
+        if banker_draws:
+            banker_hand.append(deck.pop())
+            banker_value = _calculate_baccarat_value(banker_hand)
+            embed.set_field_at(1, name="Banker's Hand", value=hand_to_string(banker_hand), inline=True)
+            embed.description = "Banker draws a third card..."
+            await interaction.message.edit(embed=embed)
+            await asyncio.sleep(2)
+
+    # --- Determine Winner and Payout ---
+    result_text = ""
+    net_change = -bet_amount  # Assume a loss by default
+
+    if player_value > banker_value:
+        winner = "Player"
+        result_text = f"Player wins! ({player_value} vs {banker_value})"
+        if bet_on == "Player":
+            net_change += bet_amount * 2  # Win bet back + 1:1 winnings
+    elif banker_value > player_value:
+        winner = "Banker"
+        result_text = f"Banker wins! ({banker_value} vs {player_value})"
+        if bet_on == "Banker":
+            # Payout is 1:1 minus 5% commission
+            net_change += bet_amount + int(bet_amount * 0.95)
+    else:
+        winner = "Tie"
+        result_text = f"It's a Tie! (Both have {player_value})"
+        if bet_on == "Tie":
+            net_change += bet_amount * 9  # Win bet back + 8:1 winnings
+
+    # --- Finalize and Update ---
+    success = await modify_coin_adjustment(user.id, net_change)
+    new_balance = await get_effective_balance(user.id)
+
+    embed.description = result_text
+    embed.clear_fields()
+    embed.add_field(name=f"Player's Hand ({player_value})", value=hand_to_string(player_hand), inline=False)
+    embed.add_field(name=f"Banker's Hand ({banker_value})", value=hand_to_string(banker_hand), inline=False)
+
+    if (winner == bet_on):
+        embed.title = "🎉 You Won! 🎉"
+        embed.color = discord.Color.green()
+    else:
+        embed.title = "😭 You Lost! 😭"
+        embed.color = discord.Color.red()
+
+    embed.add_field(name="Your New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>", inline=False)
+    await interaction.message.edit(embed=embed)
+
+    # Clean up the active game
+    del active_baccarat_games[user.id]
+
+
+@bot.command(name="baccarat", aliases=["bac"])
+async def baccarat(ctx: commands.Context, amount: int):
+    """Starts a game of Baccarat."""
+    author = ctx.author
+
+    if author.id in active_baccarat_games:
+        return await ctx.send("You're already in a game of Baccarat!", ephemeral=True)
+    if author.id in active_blackjack_games:  # Also check other games
+        return await ctx.send("You are currently in another game! Finish that one first.", ephemeral=True)
+    if amount <= 0:
+        return await ctx.send("You must bet a positive amount.", ephemeral=True)
+
+    current_balance = await get_effective_balance(author.id)
+    if current_balance < amount:
+        return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** 🪙.", ephemeral=True)
+
+    # Game setup
+    deck = create_deck()
+    embed = discord.Embed(
+        title=f"{author.display_name}'s Baccarat Game",
+        description=f"Your bet: **{amount:,}** 🪙\n\nPlease choose which hand to bet on:",
+        color=0x8B0000  # A nice dark red for Baccarat
+    )
+
+    view = BaccaratView(author.id)
+    game_message = await ctx.send(embed=embed, view=view)
+
+    # Store game state
+    active_baccarat_games[author.id] = {
+        "bet": amount,
+        "deck": deck,
+        "message_id": game_message.id
+    }
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
