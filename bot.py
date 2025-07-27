@@ -1658,17 +1658,31 @@ class BlackjackView(discord.ui.View):
                             self.message = message
 
                     message = await channel.fetch_message(game['message_id'])
-                    user = bot.get_user(self.author_id)
-                    dummy_interaction = DummyInteraction(user, message)
+                    # Fetch the user object to avoid issues if they left the server
+                    user = await bot.fetch_user(self.author_id)
+                    if user:
+                        dummy_interaction = DummyInteraction(user, message)
+                        await end_blackjack_game(dummy_interaction, 'timeout')
 
-                    await end_blackjack_game(dummy_interaction, 'timeout')
-                except discord.NotFound:
-                    # Message was deleted, just clean up state
-                    del active_blackjack_games[self.author_id]
+                except (discord.NotFound, discord.HTTPException):
+                    # Message or channel was deleted, just clean up state
+                    if self.author_id in active_blackjack_games:
+                         del active_blackjack_games[self.author_id]
+
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
     async def hit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Gives the player another card."""
+        # Defer the interaction immediately to prevent timeouts
+        await interaction.response.defer()
+
+        # Check if the game state still exists
+        if self.author_id not in active_blackjack_games:
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(content="This game has expired or could not be found due to a bot restart. Please start a new one.", embed=None, view=self)
+            return
+
         game = active_blackjack_games[self.author_id]
         game['player_hand'].append(game['deck'].pop())
         player_value = calculate_hand_value(game['player_hand'])
@@ -1684,21 +1698,38 @@ class BlackjackView(discord.ui.View):
             if player_value == 21:
                 button.disabled = True
                 self.children[1].disabled = True  # Disable stand button
-                await interaction.response.edit_message(embed=embed, view=self)
+                await interaction.message.edit(embed=embed, view=self)
                 await self.dealer_turn(interaction)
             else:
-                await interaction.response.edit_message(embed=embed)
+                # Edit the original message since we deferred
+                await interaction.message.edit(embed=embed)
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, custom_id="bj_stand")
     async def stand_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Ends the player's turn and starts the dealer's turn."""
+        # Defer the interaction immediately to prevent timeouts
+        await interaction.response.defer()
+
+        # Check if the game state still exists
+        if self.author_id not in active_blackjack_games:
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(content="This game has expired or could not be found due to a bot restart. Please start a new one.", embed=None, view=self)
+            return
+
         button.disabled = True
         self.children[0].disabled = True  # Disable hit button
-        await interaction.response.edit_message(view=self)
+
+        # Edit the message to show disabled buttons, then proceed
+        await interaction.message.edit(view=self)
         await self.dealer_turn(interaction)
 
     async def dealer_turn(self, interaction: discord.Interaction):
         """Reveals the dealer's hand and plays out their turn according to standard rules."""
+        # Add another check here in case the state was lost between stand and dealer's turn
+        if self.author_id not in active_blackjack_games:
+             return # Silently fail as a message has likely already been sent
+
         game = active_blackjack_games[self.author_id]
         embed = interaction.message.embeds[0]
 
@@ -1707,6 +1738,7 @@ class BlackjackView(discord.ui.View):
         embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
                            inline=False)
         await interaction.message.edit(embed=embed)
+        await asyncio.sleep(1) # Add a small delay for dramatic effect
 
         # Dealer must hit until their hand value is 17 or higher
         while calculate_hand_value(game['dealer_hand']) < 17:
@@ -1715,6 +1747,7 @@ class BlackjackView(discord.ui.View):
             embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
                                inline=False)
             await interaction.message.edit(embed=embed)
+            await asyncio.sleep(1) # Delay between dealer hits
 
         # Determine the winner
         player_value = calculate_hand_value(game['player_hand'])
@@ -1728,7 +1761,6 @@ class BlackjackView(discord.ui.View):
             await end_blackjack_game(interaction, 'win')
         else:
             await end_blackjack_game(interaction, 'push')
-
 
 # --- BLACKJACK COMMAND ---
 
