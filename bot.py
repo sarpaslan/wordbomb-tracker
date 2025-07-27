@@ -881,36 +881,27 @@ async def show_help(ctx):
 
     await ctx.send(embed=embed)
 
-
 @bot.command(name="give", aliases=["pay", "transfer"])
 async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
     """
-    Allows a player to give a specified amount of their coins to another player.
+    Allows a player to give a specified amount of their coins to another player
+    and shows the resulting balances.
     """
     giver = ctx.author
 
     # --- 1. Validation and Edge Case Checks ---
-
-    # Check if the user is trying to give coins to themselves
     if giver.id == receiver.id:
         await ctx.send("❌ You cannot give coins to yourself!")
         return
-
-    # Check if the user is trying to give coins to a bot
     if receiver.bot:
         await ctx.send("❌ You cannot give coins to a bot. They have no use for them!")
         return
-
-    # Check if the amount is a positive number
     if amount <= 0:
         await ctx.send("❌ You must give a positive amount of coins.")
         return
 
     # --- 2. Balance Check ---
-
-    # Get the giver's current balance to see if they can afford the transaction
     giver_balance = await get_effective_balance(giver.id)
-
     if giver_balance < amount:
         await ctx.send(
             f"❌ You don't have enough coins to do that! You only have **{giver_balance:,}** 🪙."
@@ -918,22 +909,13 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
         return
 
     # --- 3. The Transaction ---
-
     try:
-        # To ensure the economy is safe, we perform the transaction and check for success at each step.
-        # Step A: Deduct coins from the giver (-amount)
         giver_success = await modify_coin_adjustment(giver.id, -amount)
-
-        # Step B: Add coins to the receiver (+amount)
         receiver_success = await modify_coin_adjustment(receiver.id, amount)
 
-        # If either database operation failed, we must handle it.
         if not giver_success or not receiver_success:
-            # This is a critical error. We attempt to roll back the transaction if possible.
-            # If the receiver's transaction failed, we refund the giver.
             if giver_success and not receiver_success:
-                await modify_coin_adjustment(giver.id, amount)  # Give the money back
-
+                await modify_coin_adjustment(giver.id, amount) # Refund the giver
             await ctx.send("❌ A database error occurred. The transaction has been cancelled. Please try again.")
             print(f"[ERROR] Failed transaction: Giver success: {giver_success}, Receiver success: {receiver_success}")
             return
@@ -943,18 +925,29 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
         print(f"[ERROR] An exception occurred during the give command: {e}")
         return
 
-    # --- 4. Confirmation Message ---
+    # --- 4. Fetch New Balances and Send Confirmation ---
 
-    # If we get here, the transaction was successful.
+    # --- THIS IS THE NEW LOGIC ---
+    # Fetch the balances of both users *after* the transaction is complete.
+    new_giver_balance = await get_effective_balance(giver.id)
+    new_receiver_balance = await get_effective_balance(receiver.id)
+    # --- END OF NEW LOGIC ---
+
     embed = discord.Embed(
         title="✅ Transaction Successful!",
-        description=f"{giver.mention} has successfully given **{amount:,}** 🪙 to {receiver.mention}!",
+        description=f"{giver.mention} has successfully given **{amount:,}** <:wbcoin: 1398780929664745652 > to {receiver.mention}!",
         color=discord.Color.green()
     )
-    embed.set_footer(text=f"Requested by {giver.display_name}")
 
+    # --- AND THIS IS THE NEW PART OF THE EMBED ---
+    # Add fields to show the updated balances, formatted with commas.
+    embed.add_field(name=f"{giver.display_name}'s New Balance", value=f"{new_giver_balance:,} <:wbcoin: 1398780929664745652 >", inline=True)
+    embed.add_field(name=f"{receiver.display_name}'s New Balance", value=f"{new_receiver_balance:,} <:wbcoin: 1398780929664745652 >", inline=True)
+    # --- END OF EMBED CHANGE ---
+
+    embed.set_footer(text=f"Requested by {giver.display_name}")
     await ctx.send(embed=embed)
-    
+
 # Trivia Game
 class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     def __init__(self, bot, approval_channel):
