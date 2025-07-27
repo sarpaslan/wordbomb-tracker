@@ -1634,7 +1634,7 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
 
 class BlackjackView(discord.ui.View):
     def __init__(self, author_id: int):
-        super().__init__(timeout=120.0)  # Game times out after 2 minutes of inactivity
+        super().__init__(timeout=86400.0)  # Game times out after 2 minutes of inactivity
         self.author_id = author_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
