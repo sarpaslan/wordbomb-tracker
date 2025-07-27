@@ -1544,7 +1544,7 @@ async def coinflip(ctx: commands.Context, amount: int):
         await ctx.send("Please enter a positive amount of coins to bet.", ephemeral=True)
         return
     if amount > MAX_VALUE:
-        await ctx.send("Maximum bettin is 100,000 <:wbcoin:1398780929664745652>!", ephemeral=True)
+        await ctx.send("Maximum betting is 100,000 <:wbcoin:1398780929664745652>!", ephemeral=True)
         return
 
     # Get the user's total effective balance
