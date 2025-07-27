@@ -848,7 +848,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
 
     if category == "coins":
         # If the category is "coins", use your custom emoji string.
-        embed_title = f"🏆 <:wbcoin:1398780929664745652> leaderboard"
+        embed_title = f"<:wbcoin:1398780929664745652> Leaderboard"
     else:
         # Otherwise, use the default title format.
         embed_title = f"🏆 {category.capitalize()} Leaderboard"
