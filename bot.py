@@ -1475,8 +1475,6 @@ async def get_effective_balance(user_id: int) -> int:
     adjustment = await get_coin_adjustment(user_id)
     return stats_balance + adjustment
 
-
-
 # Coinflip
 @bot.command(name="cf", aliases=["coinflip"])
 async def coinflip(ctx: commands.Context, amount: int):
@@ -1495,47 +1493,65 @@ async def coinflip(ctx: commands.Context, amount: int):
     if current_balance < amount:
         return await ctx.send(f"You don't have enough coins! You only have **{current_balance:,}** 🪙.", ephemeral=True)
 
+    # Lock the user at the very beginning
     active_coinflips.add(author.id)
+
     try:
         flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
                                        color=discord.Color.blue()).set_image(
             url="https://discord.wordbomb.io/coin_flip.gif?v=2")
         result_message = await ctx.send(embed=flipping_embed)
+
+        # The 3-second animation plays
         await asyncio.sleep(3.0)
 
+        # --- All critical calculations happen BEFORE the unlock ---
         win_chance = 50
         won = random.randint(1, 100) <= win_chance
-
-        # Determine the net change and update the adjustment
         net_change = amount if won else -amount
         success = await modify_coin_adjustment(author.id, net_change)
+        # --- Database is now safely updated ---
 
         if not success:
             error_embed = discord.Embed(title="Database Error",
                                         description="An error occurred saving the result. Please try again.",
                                         color=discord.Color.orange())
             await result_message.edit(embed=error_embed)
+            # Make sure to unlock the user even if there's an error
+            active_coinflips.remove(author.id)
             return
 
         # Calculate the new final balance for display
         new_balance = current_balance + net_change
 
+        # Edit the message to the static win/loss image
         result_image_url = "https://discord.wordbomb.io/coin_win.png?v=2" if won else "https://discord.wordbomb.io/coin_lost.png?v=2"
         final_embed = discord.Embed(title="The coin has landed!",
                                     color=discord.Color.green() if won else discord.Color.red()).set_image(
             url=result_image_url)
         await result_message.edit(embed=final_embed)
+
+        # --- THIS IS YOUR SUGGESTED CHANGE ---
+        # The user is unlocked HERE, right after the result is known and saved.
+        # They can now start another coinflip while the final text appears.
+        active_coinflips.remove(author.id)
+        # --- END OF CHANGE ---
+
+        # The final text update happens after the unlock
         await asyncio.sleep(1)
 
         final_embed.title = "🎉 You Won! 🎉" if won else "😭 You Lost! 😭"
-        final_embed.description = f"You won **{amount:,}** <:wbcoin:1398780929664745652>!" if won else f"You lost **{amount:,}** <:wbcoin:1398780929664745652>."
+        final_embed.description = f"You won **{amount:,}** 🪙!" if won else f"You lost **{amount:,}** 🪙."
         final_embed.set_author(name=f"{author.display_name}'s Coinflip", icon_url=author.display_avatar.url)
-        final_embed.add_field(name="Your Bet", value=f"{amount:,} <:wbcoin:1398780929664745652>")
-        final_embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>")
+        final_embed.add_field(name="Your Bet", value=f"{amount:,} 🪙")
+        final_embed.add_field(name="New Balance", value=f"{new_balance:,} 🪙")
         await result_message.edit(embed=final_embed)
 
-    finally:
-        active_coinflips.remove(author.id)
+    except Exception as e:
+        # Generic error handler to ensure the user is always unlocked
+        print(f"[ERROR] An unexpected error occurred in coinflip: {e}")
+        if author.id in active_coinflips:
+            active_coinflips.remove(author.id)
 
 def create_deck():
     """Creates a standard 52-card deck and shuffles it."""
