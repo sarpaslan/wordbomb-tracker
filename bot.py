@@ -146,7 +146,7 @@ OTHER_BOTS_COMMANDS = {
                   "/wordle - Get Wordle results for a user",
                   "!i - Get information about a word"],
     "Word Bomb Tracker": ["!leaderboards - Get information on the leaderboard",
-                          "!give - Give a user <:wbcoin:1398780929664745652>.",
+                          "!give - Give a user <:wbcoin:1398780929664745652>",
                           "!bj `<amount>` - Play blackjack to earn <:wbcoin:1398780929664745652>!",
                           "!cf `<amount>` - Do a coinflip and test your luck to earn <:wbcoin:1398780929664745652>!",
                           "!help - Get help on the usage of commands"],
@@ -1554,7 +1554,7 @@ async def coinflip(ctx: commands.Context, amount: int):
     try:
 
         # --- All critical calculations happen BEFORE the unlock ---
-        win_chance = 50
+        win_chance = 45
         won = random.randint(1, 100) <= win_chance
         net_change = amount if won else -amount
         success = await modify_coin_adjustment(author.id, net_change)
