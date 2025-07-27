@@ -2130,9 +2130,6 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # Use the target's avatar and name in the author field for personalization.
     final_embed.set_author(name=f"IDENTITY SCAN: {target_user.display_name}", icon_url=target_user.display_avatar.url)
 
-    # The main futuristic GIF that makes it feel like a HUD.
-    final_embed.set_image(url="https://i.imgur.com/8QpS2b3.gif")
-
     # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
     final_embed.add_field(
         name="[ ASSET ANALYSIS ]",
@@ -2144,12 +2141,9 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # The main event: the total balance, formatted to stand out.
     final_embed.add_field(
         name="[ CURRENT HOLDINGS ]",
-        value=f"## `{total_balance:,}`", # "##" makes the text larger
+        value=f"<:wbcoin:1398780929664745652> `{total_balance:,}`", # "##" makes the text larger
         inline=False
     )
-
-    # A themed footer to complete the look.
-    final_embed.set_footer(text=f"NODE: {ctx.guild.name} // CONNECTION SECURE")
 
     # --- 4. Final Update ---
     # A short delay to make the "processing" feel real.
