@@ -904,7 +904,7 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
     giver_balance = await get_effective_balance(giver.id)
     if giver_balance < amount:
         await ctx.send(
-            f"❌ You don't have enough coins to do that! You only have **{giver_balance:,}** 🪙."
+            f"❌ You don't have enough coins to do that! You only have **{giver_balance:,}** <:wbcoin: 1398780929664745652>."
         )
         return
 
@@ -935,14 +935,14 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
 
     embed = discord.Embed(
         title="✅ Transaction Successful!",
-        description=f"{giver.mention} has successfully given **{amount:,}** <:wbcoin: 1398780929664745652 > to {receiver.mention}!",
+        description=f"{giver.mention} has successfully given **{amount:,}** <:wbcoin: 1398780929664745652> to {receiver.mention}!",
         color=discord.Color.green()
     )
 
     # --- AND THIS IS THE NEW PART OF THE EMBED ---
     # Add fields to show the updated balances, formatted with commas.
-    embed.add_field(name=f"{giver.display_name}'s New Balance", value=f"{new_giver_balance:,} <:wbcoin: 1398780929664745652 >", inline=True)
-    embed.add_field(name=f"{receiver.display_name}'s New Balance", value=f"{new_receiver_balance:,} <:wbcoin: 1398780929664745652 >", inline=True)
+    embed.add_field(name=f"{giver.display_name}'s New Balance", value=f"{new_giver_balance:,} <:wbcoin: 1398780929664745652>", inline=True)
+    embed.add_field(name=f"{receiver.display_name}'s New Balance", value=f"{new_receiver_balance:,} <:wbcoin: 1398780929664745652>", inline=True)
     # --- END OF EMBED CHANGE ---
 
     embed.set_footer(text=f"Requested by {giver.display_name}")
