@@ -1821,6 +1821,49 @@ async def setup_tickets(ctx):
 
     await target_channel.send(embed=embed, view=TicketStarterView())
 
+@bot.command(name="resetcoins")
+async def reset_coins(ctx: commands.Context):
+    """
+    DANGEROUS: Deletes all coin adjustments, resetting everyone's balance to be
+    based purely on their historical server activity (stats).
+    """
+    # Use the same ID as your other admin commands for consistency
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this powerful command.")
+
+    # Send an initial confirmation/working message
+    warning_message = await ctx.send(
+        "⚠️ **WARNING:** This will reset all gambling wins/losses for every user on the server.\n"
+        "Their coin balance will be recalculated purely from their stats (messages, voice, etc.).\n"
+        "This action cannot be undone. **Resetting in 5 seconds...**"
+    )
+    await asyncio.sleep(5)
+
+    try:
+        await warning_message.edit(content="⚙️ Processing... Wiping coin adjustment data...")
+
+        # Connect to the database and clear the target table
+        async with aiosqlite.connect("server_data.db") as db:
+            # This is the core of the reset. It deletes all records of wins/losses.
+            await db.execute("DELETE FROM coin_adjustments")
+            await db.commit()
+
+        # Final success message
+        await warning_message.edit(
+            content="✅ **Success!** All coin balances have been reset. "
+                    "Balances are now calculated exclusively from server activity stats."
+        )
+        print(f"[ADMIN] Coin balances were successfully reset by {ctx.author.name}.")
+
+    except Exception as e:
+        # Error handling
+        await warning_message.edit(
+            content=f"❌ **An error occurred:** Failed to reset coin balances. Please check the console.\n`{e}`"
+        )
+        print(f"[ERROR] A critical error occurred during the coin reset command: {e}")
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
