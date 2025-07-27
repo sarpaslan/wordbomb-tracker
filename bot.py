@@ -881,36 +881,80 @@ async def show_help(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command(name="give")
-async def give_time(ctx, member: discord.Member, seconds: int):
-    ALLOWED_USER_ID = 849827666064048178  # Change this to the allowed user's ID
 
-    if ctx.author.id != ALLOWED_USER_ID:
-        await ctx.send("❌ You don't have permission to use this command.")
+@bot.command(name="give", aliases=["pay", "transfer"])
+async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
+    """
+    Allows a player to give a specified amount of their coins to another player.
+    """
+    giver = ctx.author
+
+    # --- 1. Validation and Edge Case Checks ---
+
+    # Check if the user is trying to give coins to themselves
+    if giver.id == receiver.id:
+        await ctx.send("❌ You cannot give coins to yourself!")
         return
 
-    if seconds <= 0:
-        await ctx.send("❌ Please enter a positive number of seconds.")
+    # Check if the user is trying to give coins to a bot
+    if receiver.bot:
+        await ctx.send("❌ You cannot give coins to a bot. They have no use for them!")
         return
 
-    async with aiosqlite.connect("server_data.db") as db:
-        async with db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (member.id,)) as cursor:
-            row = await cursor.fetchone()
+    # Check if the amount is a positive number
+    if amount <= 0:
+        await ctx.send("❌ You must give a positive amount of coins.")
+        return
 
-        if row:
-            total = row[0] + seconds
-            await db.execute("UPDATE voice_time SET seconds = ? WHERE user_id = ?", (total, member.id))
-        else:
-            total = seconds
-            await db.execute("INSERT INTO voice_time (user_id, seconds) VALUES (?, ?)", (member.id, seconds))
+    # --- 2. Balance Check ---
 
-        await db.commit()
+    # Get the giver's current balance to see if they can afford the transaction
+    giver_balance = await get_effective_balance(giver.id)
 
-    hours = total // 3600
-    minutes = (total % 3600) // 60
-    sec = total % 60
-    await ctx.send(f"✅ Added `{seconds}` seconds to {member.mention}. New total: **{hours}h {minutes}m {sec}s**")
+    if giver_balance < amount:
+        await ctx.send(
+            f"❌ You don't have enough coins to do that! You only have **{giver_balance:,}** 🪙."
+        )
+        return
 
+    # --- 3. The Transaction ---
+
+    try:
+        # To ensure the economy is safe, we perform the transaction and check for success at each step.
+        # Step A: Deduct coins from the giver (-amount)
+        giver_success = await modify_coin_adjustment(giver.id, -amount)
+
+        # Step B: Add coins to the receiver (+amount)
+        receiver_success = await modify_coin_adjustment(receiver.id, amount)
+
+        # If either database operation failed, we must handle it.
+        if not giver_success or not receiver_success:
+            # This is a critical error. We attempt to roll back the transaction if possible.
+            # If the receiver's transaction failed, we refund the giver.
+            if giver_success and not receiver_success:
+                await modify_coin_adjustment(giver.id, amount)  # Give the money back
+
+            await ctx.send("❌ A database error occurred. The transaction has been cancelled. Please try again.")
+            print(f"[ERROR] Failed transaction: Giver success: {giver_success}, Receiver success: {receiver_success}")
+            return
+
+    except Exception as e:
+        await ctx.send("❌ An unexpected error occurred while processing the transaction.")
+        print(f"[ERROR] An exception occurred during the give command: {e}")
+        return
+
+    # --- 4. Confirmation Message ---
+
+    # If we get here, the transaction was successful.
+    embed = discord.Embed(
+        title="✅ Transaction Successful!",
+        description=f"{giver.mention} has successfully given **{amount:,}** 🪙 to {receiver.mention}!",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Requested by {giver.display_name}")
+
+    await ctx.send(embed=embed)
+    
 # Trivia Game
 class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
     def __init__(self, bot, approval_channel):
