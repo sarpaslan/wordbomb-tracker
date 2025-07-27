@@ -1509,7 +1509,7 @@ async def coinflip(ctx: commands.Context, amount: int):
             animation_duration = 3.0
             final_image_url = "https://discord.wordbomb.io/coin_win.png?v=2"
         else:
-            animation_duration = 3.5
+            animation_duration = 3.17
             final_image_url = "https://discord.wordbomb.io/coin_lost.png?v=2"
 
         flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
