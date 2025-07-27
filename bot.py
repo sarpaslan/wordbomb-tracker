@@ -2106,9 +2106,9 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     processing_embed = discord.Embed(
         title="ACCESSING WALLET DATASTREAM...",
         description=f"`Requesting asset profile for operator: {target_user.name}`",
-        color=discord.Color.dark_blue() # A dark, techy color
+        color=0x206694 # A dark, techy color
     )
-    processing_embed.set_thumbnail(url="https://i.imgur.com/S2p8c5A.gif") # A simple loading GIF
+    processing_embed.set_thumbnail(url="https://tenor.com/view/amalie-steiness-borregaard-loading-gif-loading-gif-25192894") # A simple loading GIF
     processing_msg = await ctx.send(embed=processing_embed)
 
     # --- 2. Fetch All Necessary Balance Data ---
@@ -2124,7 +2124,7 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # --- 3. Build the Final Futuristic Embed ---
     final_embed = discord.Embed(
         title="<:wbcoin:1398780929664745652> DIGITAL ASSET PROFILE",
-        color=discord.Color.cyan() # A bright, neon "cyberpunk" color
+        color=0x00FFFF # A bright, neon "cyberpunk" color
     )
 
     # Use the target's avatar and name in the author field for personalization.
