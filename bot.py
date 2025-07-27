@@ -855,6 +855,23 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
 
     embed = discord.Embed(title=embed_title, description=description,
                           color=discord.Color.gold())
+
+    rate_map = {
+        "messages": "Each message gives 75 coins.",
+        "bugs": "Each approved bug report gives 50,000 coins.",
+        "ideas": "Each approved idea gives 40,000 coins.",
+        "voice": "Voice activity is worth 5,000 coins per hour.",
+        "trivia": "Each approved trivia question gives 20,000 coins.",
+        "coins": "The total of all coins earned from server activity."  # Footer for the main coins page
+    }
+
+    # Get the correct footer text for the current category.
+    footer_text = rate_map.get(category, "")  # Safely gets the text, returns empty if not found
+
+    # Only add the footer if we found text for it.
+    if footer_text:
+        embed.set_footer(text=footer_text)
+
     view = LeaderboardView(author_id, category, 1, 1, full_rows)
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.edit_message(embed=embed, view=view)
