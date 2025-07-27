@@ -19,7 +19,6 @@ load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
 
 WORDBOMB_SERVER_TOKEN = os.getenv('WORDBOMB_SERVER_TOKEN')
-TRADE_CHANNEL_ID = 1386293640867090482
 
 WORDBOMB_API_BASE = os.getenv("WORDBOMB_API_BASE")
 BILL_CREATE_ENDPOINT = os.getenv("WORDBOMB_BILL_CREATE_ENDPOINT")
@@ -31,11 +30,6 @@ MONGO_URI = os.getenv('MONGO_URI')
 # ID of the private channel where suggestions will be sent for approval
 APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
 
-# A simple in-memory dictionary to act as our local cache
-# Structure: { user_id: { "data": { ... wallet ... }, "timestamp": 12345.67 } }
-wallet_cache = {}
-# Cache duration in seconds (10 minutes * 60 seconds/minute)
-CACHE_DURATION_SECONDS = 10 * 60
 
 active_coinflips = set()
 
@@ -249,18 +243,12 @@ async def on_ready():
                 description TEXT
             )
         """)
-
         await db_sqlite.execute("""
-            CREATE TABLE IF NOT EXISTS active_trades (
-                message_id INTEGER PRIMARY KEY,
-                seller_id INTEGER NOT NULL,
-                item_type TEXT NOT NULL,
-                item_name TEXT NOT NULL,
-                price INTEGER NOT NULL,
-                currency_type TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS coin_adjustments (
+                user_id INTEGER PRIMARY KEY,
+                adjustment_amount INTEGER NOT NULL DEFAULT 0
             )
         """)
-
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -300,7 +288,6 @@ async def on_ready():
 
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
-    bot.add_view(TradeView())  # <-- ADD THIS LINE
 
     # 2. Add the new slash command group to the bot's command tree.
 
@@ -663,6 +650,67 @@ async def on_voice_state_update(member, before, after):
             await db.execute("INSERT OR IGNORE INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (member.id, now.isoformat()))
             await db.commit()
 
+async def get_coins_leaderboard_data() -> list:
+    """
+    Gathers all user stats, calculates their effective coin balance, sorts the
+    results, and returns them as a list of (user_id, coin_count) tuples.
+    """
+    from collections import defaultdict
+    user_stats = defaultdict(lambda: {
+        "messages": 0, "bugs": 0, "ideas": 0,
+        "voice_seconds": 0, "trivia": 0, "adjustment": 0
+    })
+
+    # --- Step 1: Gather all stats from the databases ---
+    async with aiosqlite.connect("server_data.db") as db:
+        async with db.execute("SELECT user_id, count FROM messages") as cursor:
+            async for user_id, count in cursor:
+                user_stats[user_id]["messages"] = count
+        async with db.execute("SELECT user_id, count FROM bug_points") as cursor:
+            async for user_id, count in cursor:
+                user_stats[user_id]["bugs"] = count
+        async with db.execute("SELECT user_id, count FROM idea_points") as cursor:
+            async for user_id, count in cursor:
+                user_stats[user_id]["ideas"] = count
+        async with db.execute("SELECT user_id, seconds FROM voice_time") as cursor:
+            async for user_id, seconds in cursor:
+                user_stats[user_id]["voice_seconds"] = seconds
+        async with db.execute("SELECT user_id, adjustment_amount FROM coin_adjustments") as cursor:
+            async for user_id, amount in cursor:
+                user_stats[user_id]["adjustment"] = amount
+
+    if questions_collection is not None:
+        try:
+            pipeline = [
+                {"$unionWith": {"coll": "rejected"}},
+                {"$group": {"_id": "$u", "count": {"$sum": 1}}}
+            ]
+            cursor = questions_collection.aggregate(pipeline)
+            async for doc in cursor:
+                try:
+                    user_id = int(doc["_id"])
+                    user_stats[user_id]["trivia"] = doc["count"]
+                except (ValueError, KeyError):
+                    continue
+        except Exception as e:
+            print(f"[ERROR] Could not fetch bulk trivia stats for leaderboard: {e}")
+
+    # --- Step 2: Calculate and compile the final list ---
+    leaderboard_entries = []
+    for user_id, stats in user_stats.items():
+        message_coins = stats["messages"] * 1
+        bug_coins = stats["bugs"] * 150
+        idea_coins = stats["ideas"] * 100
+        voice_coins = int((stats["voice_seconds"] / 3600) * 20)
+        trivia_coins = stats["trivia"] * 100
+        total_coins = message_coins + bug_coins + idea_coins + voice_coins + trivia_coins + stats["adjustment"]
+        if total_coins > 0:
+            leaderboard_entries.append((user_id, total_coins))
+
+    # --- Step 3: Sort and return the final data ---
+    leaderboard_entries.sort(key=lambda item: item[1], reverse=True)
+    return leaderboard_entries
+
 class LeaderboardView(discord.ui.View):
     def __init__(self, author_id, current_category, page, total_pages, entries):
         super().__init__(timeout=60)
@@ -707,6 +755,10 @@ class LeaderboardView(discord.ui.View):
     async def trivia_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await update_leaderboard(interaction, "trivia", 1, self.author_id)
 
+    @discord.ui.button(label="Coins", style=discord.ButtonStyle.primary, custom_id="category_coins")
+    async def coins_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard(interaction, "coins", 1, self.author_id)
+
     @discord.ui.button(label="Bugs", style=discord.ButtonStyle.primary, custom_id="category_bugs")
     async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await update_leaderboard(interaction, "bugs", 1, self.author_id)
@@ -720,52 +772,32 @@ class LeaderboardView(discord.ui.View):
         await update_leaderboard(interaction, "voice", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
-    # This map can be simplified now that "suggestions" is gone
     table_map = {
         "messages": "messages",
         "bugs": "bug_points",
         "ideas": "idea_points",
         "voice": "voice_time"
     }
-    # I've renamed "questions" to "trivia" to match your code
     label_map = {
         "trivia": ("question suggested", "questions suggested"),
         "messages": ("message", "messages"),
         "bugs": ("bug found", "bugs found"),
         "ideas": ("idea", "ideas"),
-        "voice": ("second", "seconds")
+        "voice": ("second", "seconds"),
+        "coins": ("coin", "coins")
     }
 
     full_rows = []
 
-    # This assumes your bot is already saving rejected questions to a 'rejected_questions_collection'
-    # as we set up in the previous step.
-    if category == "trivia":
+    if category == "coins":
+        full_rows = await get_coins_leaderboard_data()
+    elif category == "trivia":
         if questions_collection is not None and rejected_questions_collection is not None:
-            # --- THIS IS THE NEW, CORRECTED PIPELINE ---
             pipeline = [
-                # Stage 1: Merge all documents from the 'rejected' collection into our pipeline.
-                # Now the pipeline contains documents from BOTH 'approved' and 'rejected'.
-                {
-                    "$unionWith": {
-                        "coll": "rejected"  # The name of the other collection to include
-                    }
-                },
-                # Stage 2: Group all the combined documents by user ID ('u').
-                {
-                    "$group": {
-                        "_id": "$u",
-                        "count": {"$sum": 1}  # Count 1 for each document (approved or rejected)
-                    }
-                },
-                # Stage 3: Sort the results to find the top contributors.
-                {
-                    "$sort": {
-                        "count": -1
-                    }
-                }
+                {"$unionWith": {"coll": "rejected"}},
+                {"$group": {"_id": "$u", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}}
             ]
-            # We start the pipeline on one collection, and $unionWith brings in the other.
             cursor = questions_collection.aggregate(pipeline)
             full_rows = [(doc["_id"], doc["count"]) async for doc in cursor]
         else:
@@ -776,8 +808,9 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
                 await ctx_or_interaction.send(error_message)
             return
     else:
-        # This part for SQLite leaderboards remains unchanged.
+        # This part for SQLite leaderboards remains the same.
         if category not in table_map:
+            # This check will now only apply to categories that are supposed to be in table_map.
             await ctx_or_interaction.response.send_message("Invalid category.", ephemeral=True)
             return
         table = table_map[category]
@@ -1110,32 +1143,7 @@ async def setup_suggestions(ctx):
     await target_channel.send(embed=embed, view=SuggestionStarterView())
     await ctx.send(f"✅ Suggestion button message has been sent to {target_channel.mention}.")
 
-# Cache wallet
-def get_cached_wallet(user_id: int) -> dict:
-    """
-    Fetches a user's wallet, prioritizing a local cache.
-    If the cache is old or doesn't exist, it fetches from the live API.
-    """
-    now = time.time()
-    user_id_str = str(user_id)
 
-    # 1. Check if a fresh entry exists in our cache
-    if user_id in wallet_cache and (now - wallet_cache[user_id]['timestamp']) < CACHE_DURATION_SECONDS:
-        print(f"[CACHE] Wallet cache HIT for user {user_id_str}")
-        return wallet_cache[user_id]['data']
-
-    # 2. If not, fetch from the live API (a cache "miss")
-    print(f"[CACHE] Wallet cache MISS for user {user_id_str}. Fetching from API.")
-    live_wallet_data = get_wordbomb_wallet(user_id)  # This calls your existing helper
-
-    # 3. If the API call was successful, update our cache
-    if "error" not in live_wallet_data:
-        wallet_cache[user_id] = {
-            "data": live_wallet_data,
-            "timestamp": now
-        }
-
-    return live_wallet_data
 
 class ApprovalView(ui.View):
     def __init__(self):
@@ -1376,355 +1384,147 @@ class TicketStarterView(ui.View):
 
         await interaction.followup.send(f"Your ticket has been created: {new_channel.mention}", ephemeral=True)
 
-# Trading
-def get_wordbomb_wallet(user_id: int) -> dict:
-    """Fetches a user's wallet from the Word Bomb API."""
-    if not WORDBOMB_SERVER_TOKEN:
-        return {"error": "API token not configured."}
 
-    api_url = f"{WORDBOMB_API_BASE}{WALLET_ENDPOINT}/{user_id}"
-    headers = {"Authorization": f"Bearer {WORDBOMB_SERVER_TOKEN}"}
+async def calculate_total_coins_from_stats(user_id: int) -> int:
+    """
+    Calculates a user's total coin balance by converting all their historical stats.
+    """
+    total_coins = 0
 
-    try:
-        response = requests.get(api_url, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": f"API returned status {response.status_code}"}
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Network error: {e}"}
+    # 1. Calculate from SQLite stats (Messages, Bugs, Ideas, Voice)
+    async with aiosqlite.connect("server_data.db") as db:
+        # Messages: 1 coin per message
+        msg_cursor = await db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,))
+        if msg_row := await msg_cursor.fetchone():
+            total_coins += msg_row[0] * 1
 
+        # Bug Reports: 150 coins per report
+        bug_cursor = await db.execute("SELECT count FROM bug_points WHERE user_id = ?", (user_id,))
+        if bug_row := await bug_cursor.fetchone():
+            total_coins += bug_row[0] * 150
 
-def update_wordbomb_wallet(user_id: int, amount: int, currency_type: str, operation: str, reason: str) -> bool:
-    """Updates a user's wallet using the Word Bomb API. Returns True on success."""
-    if not WORDBOMB_SERVER_TOKEN:
-        print("[ERROR] Word Bomb server token not configured.")
-        return False
+        # Ideas: 100 coins per idea
+        idea_cursor = await db.execute("SELECT count FROM idea_points WHERE user_id = ?", (user_id,))
+        if idea_row := await idea_cursor.fetchone():
+            total_coins += idea_row[0] * 100
 
-    user_id_str = str(user_id)
+        # Voice Time: 20 coins per hour
+        voice_cursor = await db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,))
+        if voice_row := await voice_cursor.fetchone():
+            hours = voice_row[0] / 3600
+            total_coins += int(hours * 20)
 
-    api_url = f"{WORDBOMB_API_BASE}{BILL_CREATE_ENDPOINT}"
-    headers = {"Authorization": f"Bearer {WORDBOMB_SERVER_TOKEN}"}
-    payload = {
-        "target": user_id_str,
-        "amount": amount,
-        "type": currency_type,  # "gem" or "coin"
-        "operation": operation,  # "add", "subtract", or "set"
-        "reason": reason
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=payload)
-        if response.status_code == 200:
-            print(f"[TRADE] Successfully executed bill: {user_id} {operation} {amount} {currency_type} for {reason}")
-            return True
-        else:
-            print(f"[ERROR] Bill creation failed with status {response.status_code}: {response.text}")
-            return False
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Network error during bill creation: {e}")
-        return False
-
-
-class TradeOfferModal(Modal, title="Create New Trade Offer"):
-    def __init__(self):
-        super().__init__()
-        # These are the correct variable names
-        self.item_type_input = TextInput(label="Item Type", placeholder="syllable or discovery", required=True,
-                                         max_length=10)
-        self.add_item(self.item_type_input)
-
-        self.item_name_input = TextInput(label="Item Name", placeholder="e.g., 'inter' or 'quintessential'",
-                                         required=True, max_length=50)
-        self.add_item(self.item_name_input)
-
-        self.price_input = TextInput(label="Price", placeholder="e.g., 100", required=True, max_length=10)
-        self.add_item(self.price_input)
-
-        self.currency_type_input = TextInput(label="Currency", placeholder="coin or gem", required=True, max_length=5)
-        self.add_item(self.currency_type_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # --- THIS IS THE CORRECTED LOGIC ---
-
-        # 1. Use the correct variable names (e.g., item_type_input)
-        # 2. Use .value to get the text from a TextInput, not .values[0]
-        item_type = self.item_type_input.value.lower().strip()
-        if item_type not in ["syllable", "discovery"]:
-            return await interaction.response.send_message("Invalid Item Type. Please enter `syllable` or `discovery`.",
-                                                           ephemeral=True)
-
-        currency_type = self.currency_type_input.value.lower().strip()
-        if currency_type not in ["coin", "gem"]:
-            return await interaction.response.send_message("Invalid Currency. Please enter `coin` or `gem`.",
-                                                           ephemeral=True)
-
+    # 2. Calculate from MongoDB stats (Trivia Questions)
+    # --- THIS IS THE CORRECTED LINE ---
+    if questions_collection is not None:
+        pipeline = [
+            {"$unionWith": {"coll": "rejected"}},
+            {"$match": {"u": str(user_id)}},
+            {"$count": "total_suggestions"}
+        ]
         try:
-            price = int(self.price_input.value)
-            if price <= 0: raise ValueError()
-        except ValueError:
-            return await interaction.response.send_message("Invalid price. Please enter a positive whole number.",
-                                                           ephemeral=True)
+            result = await questions_collection.aggregate(pipeline).to_list(length=1)
+            if result:
+                suggestion_count = result[0]['total_suggestions']
+                total_coins += suggestion_count * 100
+        except Exception as e:
+            print(f"[ERROR] Could not fetch trivia stats for {user_id}: {e}")
 
-        # The rest of the logic was already correct
-        item_name = self.item_name_input.value
-        seller = interaction.user
+    return total_coins
 
-        currency_emoji = "💎" if currency_type == "gem" else "🪙"
-        embed_color = 0x00e1ff if currency_type == "gem" else 0xffd700
+async def get_coin_adjustment(user_id: int) -> int:
+    """Fetches the current win/loss adjustment for a user from the database."""
+    async with aiosqlite.connect("server_data.db") as db:
+        await db.execute("INSERT OR IGNORE INTO coin_adjustments (user_id, adjustment_amount) VALUES (?, 0)",
+                         (user_id,))
+        cursor = await db.execute("SELECT adjustment_amount FROM coin_adjustments WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
-        embed = discord.Embed(
-            title=f"New {item_type.capitalize()} for Sale!",
-            description=f"**Item:** `{item_name}`",
-            color=embed_color
-        )
-        embed.set_author(name=f"{seller.display_name}'s Offer", icon_url=seller.display_avatar.url)
-        embed.add_field(name="Price", value=f"**{price:,}** {currency_emoji}")
-        embed.set_footer(text=f"Seller ID: {seller.id}")
 
-        trade_channel = bot.get_channel(TRADE_CHANNEL_ID)
-        if not trade_channel:
-            return await interaction.response.send_message("Error: Trade channel not found.", ephemeral=True)
-
-        offer_message = await trade_channel.send(embed=embed, view=TradeView())
-
+async def modify_coin_adjustment(user_id: int, amount_change: int) -> bool:
+    """Modifies the user's gambling adjustment by a certain amount (positive for win, negative for loss)."""
+    try:
         async with aiosqlite.connect("server_data.db") as db:
-            await db.execute(
-                "INSERT INTO active_trades (message_id, seller_id, item_type, item_name, price, currency_type) VALUES (?, ?, ?, ?, ?, ?)",
-                (offer_message.id, seller.id, item_type, item_name, price, currency_type)
-            )
+            await db.execute("INSERT OR IGNORE INTO coin_adjustments (user_id, adjustment_amount) VALUES (?, 0)",
+                             (user_id,))
+            await db.execute("UPDATE coin_adjustments SET adjustment_amount = adjustment_amount + ? WHERE user_id = ?",
+                             (amount_change, user_id))
             await db.commit()
-
-        await interaction.response.send_message(f"Your trade offer has been posted in {trade_channel.mention}!",
-                                                ephemeral=True)
-
-# This is the persistent view with the "Buy" button
-class TradeView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @ui.button(label='Buy Item', style=discord.ButtonStyle.green, custom_id='buy_trade_item')
-    async def buy_button(self, interaction: discord.Interaction, button: ui.Button):
-        buyer = interaction.user
-        message = interaction.message
-
-        # 1. Fetch trade details from our database
-        async with aiosqlite.connect("server_data.db") as db:
-            cursor = await db.execute("SELECT * FROM active_trades WHERE message_id = ?", (message.id,))
-            trade_data = await cursor.fetchone()
-
-        if not trade_data:
-            return await interaction.response.send_message("This item has already been sold or the offer has expired.",
-                                                           ephemeral=True)
-
-        # Unpack the trade data
-        seller_id, item_type, item_name, price, currency_type = trade_data[1], trade_data[2], trade_data[3], trade_data[
-            4], trade_data[5]
-
-        # 2. Prevent user from buying their own item
-        if buyer.id == seller_id:
-            return await interaction.response.send_message("You cannot buy your own item.", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True)  # Acknowledge the interaction, gives us more time
-
-        # 3. Verify buyer's wallet
-        buyer_wallet = get_wordbomb_wallet(buyer.id)
-        if "error" in buyer_wallet or buyer_wallet.get(currency_type, 0) < price:
-            return await interaction.followup.send("You do not have enough funds to purchase this item.",
-                                                   ephemeral=True)
-
-        # 4. Perform the transaction
-        # Subtract from buyer
-        buyer_subtract_success = update_wordbomb_wallet(buyer.id, price, currency_type, "subtract",
-                                                        f"market purchase of {item_name}")
-        if not buyer_subtract_success:
-            return await interaction.followup.send("An error occurred while processing your payment. Please try again.",
-                                                   ephemeral=True)
-
-        # Add to seller
-        seller_add_success = update_wordbomb_wallet(seller_id, price, currency_type, "add",
-                                                    f"market sale of {item_name}")
-        if not seller_add_success:
-            # Critical error: Buyer was charged but seller wasn't paid. We must revert the buyer's payment.
-            print(f"[CRITICAL] Failed to pay seller {seller_id}. Reverting payment for buyer {buyer.id}.")
-            update_wordbomb_wallet(buyer.id, price, currency_type, "add", "market purchase refund")
-            return await interaction.followup.send(
-                "A critical error occurred with the seller's payment. Your payment has been refunded.", ephemeral=True)
-
-        # 5. Transaction successful, clean up
-        async with aiosqlite.connect("server_data.db") as db:
-            await db.execute("DELETE FROM active_trades WHERE message_id = ?", (message.id,))
-            await db.commit()
-
-        # 6. Update the original message to show "SOLD"
-        original_embed = message.embeds[0]
-        sold_embed = original_embed
-        sold_embed.title = f"SOLD: {item_type.capitalize()} was Purchased!"
-        sold_embed.color = 0x808080  # Grey
-        sold_embed.add_field(name="Buyer", value=buyer.mention, inline=False)
-
-        self.buy_button.disabled = True
-        self.buy_button.label = "SOLD"
-
-        await message.edit(embed=sold_embed, view=self)
-        await interaction.followup.send(f"You successfully purchased `{item_name}`!", ephemeral=True)
+            return True
+    except Exception as e:
+        print(f"[ERROR] Failed to modify coin adjustment for {user_id}: {e}")
+        return False
 
 
-class StartTradeOfferView(ui.View):
-    def __init__(self, author_id: int):
-        super().__init__(timeout=180)  # The button will work for 3 minutes
-        self.author_id = author_id
-
-    # This check ensures only the person who ran the command can use the button
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("This button is not for you.", ephemeral=True)
-            return False
-        return True
-
-    # When the button is clicked, it opens the modal
-    @ui.button(label="Post Trade Offer", style=discord.ButtonStyle.green)
-    async def post_offer_button(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(TradeOfferModal())
-
-    # This function will disable the button after the view times out
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        # We need to get the original message to edit it
-        # Since we don't have it directly, we can't edit it. The button will just stop working.
-
-
-@bot.command(name="tradepost")
-async def post_trade(ctx: commands.Context):
-    """Sends a message with a button to open the trade offer modal."""
-
-    # Create an instance of our new view, passing the command author's ID
-    view = StartTradeOfferView(author_id=ctx.author.id)
-
-    # Send a message that is only visible to the user who ran the command
-    await ctx.send(
-        "Click the button below to create your trade offer.",
-        view=view,
-        ephemeral=True
-    )
-
-@bot.command(name="testaddcoins")
-async def test_add_coins(ctx):
-    target_id = "265196052192165888"  # Target user ID as a string
-    result = update_wordbomb_wallet(target_id, 100, "coin", "add", "test-add-coins")
-
-    if result:
-        await ctx.send("✅ 100 coins successfully added to the target user.")
-    else:
-        await ctx.send("❌ Failed to add coins to the target user.")
+async def get_effective_balance(user_id: int) -> int:
+    """
+    The main function to get a user's final, playable coin balance.
+    This is the sum of their stat-based coins and their gambling adjustments.
+    """
+    stats_balance = await calculate_total_coins_from_stats(user_id)
+    adjustment = await get_coin_adjustment(user_id)
+    return stats_balance + adjustment
 
 # Coinflip
 @bot.command(name="cf", aliases=["coinflip"])
 async def coinflip(ctx: commands.Context, amount: int):
-    """Gamble your coins with a multi-stage animation and a user-specific cooldown."""
-
+    """Gamble your coins based on your total leaderboard stats."""
     author = ctx.author
 
     if author.id in active_coinflips:
         return await ctx.send("You already have a coinflip in progress! Please wait for it to finish.", ephemeral=True)
 
+    if amount <= 0:
+        await ctx.send("Please enter a positive amount of coins to bet.", ephemeral=True)
+        return
+
+    # Get the user's total effective balance
+    current_balance = await get_effective_balance(author.id)
+    if current_balance < amount:
+        return await ctx.send(f"You don't have enough coins! You only have **{current_balance:,}** 🪙.", ephemeral=True)
+
     active_coinflips.add(author.id)
-
-    if amount > 10_000:
-        win_chance = 44  # lower win chance
-    else:
-        win_chance = 44  # normal win chance
-
     try:
-        MAX_BET = 50000
-        if amount <= 0:
-            await ctx.send("Please enter a positive amount of coins to bet.")
-            return
-        if amount > MAX_BET:
-            await ctx.send(f"You can only bet a maximum of **{MAX_BET:,}** 🪙 at a time!")
-            return
-
-        wallet = get_cached_wallet(author.id)
-        if "error" in wallet:
-            await ctx.send(f"Sorry, I couldn't fetch your wallet. Error: {wallet['error']}")
-            return
-
-        current_coins = wallet.get("coin", 0)
-        if current_coins < amount:
-            await ctx.send(f"You don't have enough coins! You only have **{current_coins:,}** 🪙.")
-            return
-
-        # STAGE 1: Send the flipping GIF
-        flipping_embed = discord.Embed(
-            title=f"{author.display_name}'s Coinflip...",
-            color=discord.Color.blue()
-        ).set_image(url="https://discord.wordbomb.io/coin_flip.gif?v=2")
+        flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
+                                       color=discord.Color.blue()).set_image(
+            url="https://discord.wordbomb.io/coin_flip.gif?v=2")
         result_message = await ctx.send(embed=flipping_embed)
-
         await asyncio.sleep(3.0)
 
-        # Logic & API Calls
-        if random.randint(1, 100) <= win_chance:
-            result = "win"
-            operation = "add"
-            reason = "coinflip win"
-            new_balance = current_coins + amount
-            result_image_url = "https://discord.wordbomb.io/coin_win.png?v=2"
-        else:
-            result = "loss"
-            operation = "subtract"
-            reason = "coinflip loss"
-            new_balance = current_coins - amount
-            result_image_url = "https://discord.wordbomb.io/coin_lost.png?v=2"
+        win_chance = 44
+        won = random.randint(1, 100) <= win_chance
 
-        success = update_wordbomb_wallet(author.id, amount, "coin", operation, reason)
+        # Determine the net change and update the adjustment
+        net_change = amount if won else -amount
+        success = await modify_coin_adjustment(author.id, net_change)
 
         if not success:
-            error_embed = discord.Embed(title="Server Error",
-                                        description="An error occurred with the game server. Your balance was not changed.",
+            error_embed = discord.Embed(title="Database Error",
+                                        description="An error occurred saving the result. Please try again.",
                                         color=discord.Color.orange())
             await result_message.edit(embed=error_embed)
             return
 
-        # Update local cache
-        if author.id in wallet_cache:
-            wallet_cache[author.id]['data']['coin'] = new_balance
-            wallet_cache[author.id]['timestamp'] = time.time()
+        # Calculate the new final balance for display
+        new_balance = current_balance + net_change
 
-        # STAGE 2: Show the static win/loss image
-        static_result_embed = discord.Embed(
-            title="The coin has landed!",
-            color=discord.Color.green() if result == "win" else discord.Color.red()
-        ).set_image(url=result_image_url)
-        await result_message.edit(embed=static_result_embed)
-
+        result_image_url = "https://discord.wordbomb.io/coin_win.png?v=2" if won else "https://discord.wordbomb.io/coin_lost.png?v=2"
+        final_embed = discord.Embed(title="The coin has landed!",
+                                    color=discord.Color.green() if won else discord.Color.red()).set_image(
+            url=result_image_url)
+        await result_message.edit(embed=final_embed)
         await asyncio.sleep(1)
 
-        # --- THIS IS THE ADJUSTED LOGIC ---
-        # STAGE 3: Modify the existing embed instead of creating a new one.
-
-        # We take the embed from Stage 2 and add the final details to it.
-        final_embed = static_result_embed
-
-        if result == "win":
-            final_embed.title = "🎉 You Won! 🎉"
-            final_embed.description = f"You won **{amount:,}** 🪙!"
-        else:  # loss
-            final_embed.title = "😭 You Lost! 😭"
-            final_embed.description = f"You lost **{amount:,}** 🪙."
-
+        final_embed.title = "🎉 You Won! 🎉" if won else "😭 You Lost! 😭"
+        final_embed.description = f"You won **{amount:,}** 🪙!" if won else f"You lost **{amount:,}** 🪙."
         final_embed.set_author(name=f"{author.display_name}'s Coinflip", icon_url=author.display_avatar.url)
         final_embed.add_field(name="Your Bet", value=f"{amount:,} 🪙")
         final_embed.add_field(name="New Balance", value=f"{new_balance:,} 🪙")
-        # The main image is already set from Stage 2, so we don't need to add it again.
-
-
         await result_message.edit(embed=final_embed)
 
     finally:
         active_coinflips.remove(author.id)
-
 
 def create_deck():
     """Creates a standard 52-card deck and shuffles it."""
@@ -1762,94 +1562,65 @@ def hand_to_string(hand, hide_dealer_card=False):
 
 async def end_blackjack_game(interaction: discord.Interaction, result: str):
     """
-    Finalizes the game, calculates winnings, updates the wallet,
-    edits the final message, and cleans up the game state.
+    Finalizes the game, displays the final hands, calculates winnings,
+    updates the coin adjustment, and edits the final message.
     """
     user_id = interaction.user.id
     if user_id not in active_blackjack_games:
-        return  # Game has already been cleaned up
+        return  # Game already ended
 
     game = active_blackjack_games[user_id]
     bet = game['bet']
 
+    # --- THIS IS THE NEW, CRUCIAL LOGIC ---
+    # Calculate final values and display both hands fully revealed.
+    # This ensures the user always sees the final state.
     player_value = calculate_hand_value(game['player_hand'])
     dealer_value = calculate_hand_value(game['dealer_hand'])
 
     final_embed = interaction.message.embeds[0]
-    final_embed.clear_fields()  # Remove old fields to show the final result
+    final_embed.clear_fields()  # Remove old fields for a clean final state
 
-    # Display both hands fully revealed
-    final_embed.add_field(name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
-                          inline=False)
+    final_embed.add_field(name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']), inline=False)
     final_embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(game['player_hand']), inline=False)
-
-    wallet_updated = False
-    reason_suffix = f" (bet: {bet})"
-    payout_amount = 0 # This will hold the amount to add back to the wallet/cache
-
-    if result == 'blackjack':
-        winnings = int(bet * 1.5)
-        payout_amount = bet + winnings # Player gets their original bet back + winnings
-        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack win" + reason_suffix):
-            wallet_updated = True
-        final_embed.title = "BLACKJACK! You Win!"
-        final_embed.color = discord.Color.gold()
-        final_embed.description = f"A natural 21 pays 3:2! You won **{winnings:,}** 🪙!"
-
-    elif result == 'win':
-        payout_amount = bet * 2 # Player gets double their bet back
-        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack win" + reason_suffix):
-            wallet_updated = True
-        final_embed.title = "You Win!"
-        final_embed.color = discord.Color.green()
-        final_embed.description = f"You won **{bet:,}** 🪙!"
-
-    elif result == 'push':
-        payout_amount = bet # Bet is returned to the player
-        if update_wordbomb_wallet(user_id, payout_amount, "coin", "add", "blackjack push" + reason_suffix):
-            wallet_updated = True
-        final_embed.title = "Push"
-        final_embed.color = discord.Color.light_grey()
-        final_embed.description = "It's a tie! Your bet has been returned."
-
-    elif result in ('bust', 'loss'):
-        wallet_updated = True  # The bet was already subtracted, so the transaction is complete
-        final_embed.title = "You Lose"
-        final_embed.color = discord.Color.red()
-        final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
-
-    elif result == 'timeout':
-        wallet_updated = True
-        final_embed.title = "Game Timed Out"
-        final_embed.color = discord.Color.dark_grey()
-        final_embed.description = f"You lost your bet of **{bet:,}** 🪙 due to inactivity."
-
-    # --- THIS IS THE NEW CACHING LOGIC ---
-    # If the wallet was updated successfully via the API, update the local cache
-    if wallet_updated and payout_amount > 0 and user_id in wallet_cache:
-        wallet_cache[user_id]['data']['coin'] += payout_amount
-        wallet_cache[user_id]['timestamp'] = time.time()
-        print(f"[CACHE] Blackjack payout updated for user {user_id}")
     # --- END OF NEW LOGIC ---
 
-    if not wallet_updated:
-        # This is a fallback in case the API fails during the payout
-        final_embed.description = "A server error occurred while processing your winnings. Your original bet has been refunded."
-        # Attempt to refund the player
-        if update_wordbomb_wallet(user_id, bet, "coin", "add", "blackjack error refund" + reason_suffix):
-            # If the refund succeeds, update the cache
-            if user_id in wallet_cache:
-                wallet_cache[user_id]['data']['coin'] += bet
-                wallet_cache[user_id]['timestamp'] = time.time()
-                print(f"[CACHE] Blackjack error refund updated for user {user_id}")
+    net_change = -bet  # Start with the initial bet loss
 
+    if result == 'blackjack':
+        net_change += bet + int(bet * 1.5)  # Win bet back + 1.5x winnings
+        final_embed.title = "🎉 BLACKJACK! 🎉"
+        final_embed.color = discord.Color.gold()
+        final_embed.description = f"A natural 21 pays 3:2! You won **{int(bet * 1.5):,}** 🪙!"
+    elif result == 'win':
+        net_change += bet * 2  # Win bet back + winnings
+        final_embed.title = "✅ You Win! ✅"
+        final_embed.color = discord.Color.green()
+        final_embed.description = f"You won **{bet:,}** 🪙!"
+    elif result == 'push':
+        net_change += bet  # Get the bet back
+        final_embed.title = "➖ Push ➖"
+        final_embed.color = discord.Color.light_grey()
+        final_embed.description = "It's a tie! Your bet has been returned."
+    elif result == 'bust':
+        # net_change is already -bet
+        final_embed.title = "❌ Bust! ❌"
+        final_embed.color = discord.Color.dark_red()
+        final_embed.description = f"You went over 21 and lost your bet of **{bet:,}** 🪙."
+    else:  # 'loss' or 'timeout'
+        # net_change is already -bet
+        final_embed.title = "Game Timed Out" if result == 'timeout' else "You Lose"
+        final_embed.color = discord.Color.dark_grey() if result == 'timeout' else discord.Color.red()
+        final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
 
-    # Clean up the active game state
+    # Apply the single adjustment
+    success = await modify_coin_adjustment(user_id, net_change)
+    if not success:
+        await modify_coin_adjustment(user_id, bet)
+        final_embed.description = "A database error occurred. Your original bet has been refunded."
+
     del active_blackjack_games[user_id]
-
-    # Edit the original message with the final results and remove the buttons (view=None)
     await interaction.message.edit(embed=final_embed, view=None)
-
 
 # --- BLACKJACK INTERACTIVE VIEW ---
 
@@ -1956,112 +1727,39 @@ class BlackjackView(discord.ui.View):
 
 @bot.command(name="bj", aliases=["blackjack"])
 async def blackjack(ctx: commands.Context, amount: int):
-    """Starts a game of Blackjack for coins."""
     author = ctx.author
-
     if author.id in active_blackjack_games:
-        game_data = active_blackjack_games[author.id]
-        # Check if the game is older than 10 minutes (600 seconds)
-        if time.time() - game_data.get("start_time", 0) > 600:
-            await ctx.send(
-                "It looks like you had a previous game that was left unfinished. I'm clearing it up for you now. Please run the command again.",
-                ephemeral=True)
-
-            # Try to edit the old message to show it expired
-            try:
-                channel = bot.get_channel(game_data['channel_id'])
-                if channel:
-                    old_message = await channel.fetch_message(game_data['message_id'])
-                    expired_embed = old_message.embeds[0]
-                    expired_embed.title = "Game Expired"
-                    expired_embed.color = discord.Color.dark_grey()
-                    expired_embed.description = "This game was left inactive and has been cleared."
-                    await old_message.edit(embed=expired_embed, view=None)
-            except discord.NotFound:
-                # The old message was likely deleted, which is fine.
-                pass
-            except Exception as e:
-                print(f"[BLACKJACK_CLEANUP_ERROR] Could not edit old message for {author.id}: {e}")
-
-            # Delete the stale game entry and stop the command
-            del active_blackjack_games[author.id]
-            return
-        else:
-            # If the game is NOT stale, then tell them it's still active.
-            await ctx.send("You're already in a game of blackjack! Finish that one first.", ephemeral=True)
-            return
-
+        return await ctx.send("You're already in a game!", ephemeral=True)
     if amount <= 0:
-        await ctx.send("You must bet a positive amount of coins.", ephemeral=True)
-        return
+        return await ctx.send("You must bet a positive amount.", ephemeral=True)
 
-    MAX_BET = 50000
-    if amount > MAX_BET:
-        await ctx.send(f"The maximum bet for blackjack is **{MAX_BET:,}** 🪙.")
-        return
+    # Get the user's total effective balance
+    current_balance = await get_effective_balance(author.id)
+    if current_balance < amount:
+        return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** 🪙.", ephemeral=True)
 
-    wallet = get_cached_wallet(author.id)
-    if "error" in wallet:
-        await ctx.send(f"Error fetching your wallet: {wallet['error']}", ephemeral=True)
-        return
-
-    if wallet.get("coin", 0) < amount:
-        await ctx.send(f"You don't have enough coins! You need **{amount:,}** 🪙 to make that bet.", ephemeral=True)
-        return
-
-    # Subtract the bet from the player's wallet before the game starts
-    if not update_wordbomb_wallet(author.id, amount, "coin", "subtract", f"blackjack bet ({amount})"):
-        await ctx.send("A server error occurred while placing your bet. Please try again.", ephemeral=True)
-        return
-
-    # Update local cache to reflect the bet
-    if author.id in wallet_cache:
-        wallet_cache[author.id]['data']['coin'] -= amount
-
-    # Set up the game deck and deal initial cards
+    # --- The rest of the game setup logic remains the same ---
+    # (create deck, deal cards, create embed, send message, check for natural blackjack)
     deck = create_deck()
     player_hand = [deck.pop(), deck.pop()]
     dealer_hand = [deck.pop(), deck.pop()]
     player_value = calculate_hand_value(player_hand)
-    dealer_value = calculate_hand_value(dealer_hand)
-
-    # Create the embed and interactive view
-    embed = discord.Embed(
-        title=f"{author.display_name}'s Blackjack Game",
-        color=0x2E3136  # Dark theme color
-    )
+    embed = discord.Embed(title=f"{author.display_name}'s Blackjack Game", color=0x2E3136)
     embed.add_field(name="Dealer's Hand (?)", value=hand_to_string(dealer_hand, hide_dealer_card=True), inline=False)
     embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(player_hand), inline=False)
     embed.set_footer(text=f"Your Bet: {amount:,} coins")
-
     view = BlackjackView(author.id)
     game_message = await ctx.send(embed=embed, view=view)
+    active_blackjack_games[author.id] = { "deck": deck, "player_hand": player_hand, "dealer_hand": dealer_hand, "bet": amount, "message_id": game_message.id, "channel_id": ctx.channel.id }
 
-    # Store the game state in the active games dictionary
-    active_blackjack_games[author.id] = {
-        "deck": deck, "player_hand": player_hand, "dealer_hand": dealer_hand,
-        "bet": amount, "message_id": game_message.id, "channel_id": ctx.channel.id,
-    }
-
-    # Check for an immediate Blackjack (natural 21)
-    player_has_bj = player_value == 21
-    dealer_has_bj = dealer_value == 21
-
-    if player_has_bj or dealer_has_bj:
-        # Stop the view from being interactive as the game is over
+    # Check for immediate Blackjack
+    if player_value == 21:
         view.stop()
-
         class DummyInteraction:
             def __init__(self, user, message): self.user, self.message = user, message
-
         dummy_interaction = DummyInteraction(author, game_message)
-
-        if player_has_bj and not dealer_has_bj:
-            await end_blackjack_game(dummy_interaction, 'blackjack')
-        elif dealer_has_bj and not player_has_bj:
-            await end_blackjack_game(dummy_interaction, 'loss')
-        else:  # Both have blackjack
-            await end_blackjack_game(dummy_interaction, 'push')
+        result = 'blackjack' if calculate_hand_value(dealer_hand) != 21 else 'push'
+        await end_blackjack_game(dummy_interaction, result)
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
