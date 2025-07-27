@@ -1560,7 +1560,7 @@ async def coinflip(ctx: commands.Context, amount: int):
     try:
 
         # --- All critical calculations happen BEFORE the unlock ---
-        win_chance = 50
+        win_chance = 51
         won = random.randint(1, 100) <= win_chance
         net_change = amount if won else -amount
         success = await modify_coin_adjustment(author.id, net_change)
