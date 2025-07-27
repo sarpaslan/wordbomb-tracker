@@ -834,7 +834,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
             username = f"Unknown User ({user_id})"
         singular, plural = label_map[category]
         unit = plural if count != 1 else singular
-        display_count = f"{count // 3600}h {(count % 3600) // 60}m {count % 60}s" if category == "voice" else f"{count} {unit}"
+        display_count = f"{count // 3600}h {(count % 3600) // 60}m {count % 60}s" if category == "voice" else f"{count:,} {unit}"
         line = f"{i}. {'➤ ' if str(user_id) == author_id_str else ''}{username} • **{display_count}**"
         lines.append(line)
     if author_rank and author_rank > 10 and author_points > 0:
