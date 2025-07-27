@@ -40,6 +40,7 @@ RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 1
 # This dictionary will hold all active games, with the user's ID as the key.
 active_blackjack_games = {}
 active_baccarat_games = {}
+active_duels = {}
 
 # --- MongoDB Setup ---
 client = None
@@ -1722,7 +1723,7 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
 
 class BlackjackView(discord.ui.View):
     def __init__(self, author_id: int):
-        super().__init__(timeout=86400.0)  # Game times out after 2 minutes of inactivity
+        super().__init__(timeout=86400.0)  # Game times out after 1 day of inactivity
         self.author_id = author_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -2076,7 +2077,7 @@ async def baccarat(ctx: commands.Context, amount: int):
     deck = create_deck()
     embed = discord.Embed(
         title=f"{author.display_name}'s Baccarat Game",
-        description=f"Your bet: **{amount:,}** 🪙\n\nPlease choose which hand to bet on:",
+        description=f"Your bet: **{amount:,}** <:wbcoin:1398780929664745652>\n\nPlease choose which hand to bet on:",
         color=0x8B0000  # A nice dark red for Baccarat
     )
 
@@ -2090,6 +2091,7 @@ async def baccarat(ctx: commands.Context, amount: int):
         "message_id": game_message.id
     }
 
+# Balance
 @bot.command(name="bal", aliases=["balance", "wallet"])
 async def bal(ctx: commands.Context, member: discord.Member = None):
     """Displays a user's coin balance in a futuristic-themed embed."""
@@ -2172,6 +2174,270 @@ async def setup_tickets(ctx):
     ).set_footer(text="Use this for sensitive reports regarding moderators, cheaters, or issues in general.")
 
     await target_channel.send(embed=embed, view=TicketStarterView())
+
+# Dice Duels
+class DuelChallengeView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int, bet: int):
+        super().__init__(timeout=120.0) # The challenge expires after 2 minutes
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.bet = bet
+        self.accepted = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only the challenged opponent can accept or decline
+        if interaction.user.id == self.opponent_id:
+            return True
+        await interaction.response.send_message("This challenge is not for you.", ephemeral=True)
+        return False
+
+    async def on_timeout(self):
+        if not self.accepted:
+            # If the view times out and wasn't accepted, disable buttons and show it expired.
+            for item in self.children:
+                item.disabled = True
+            await self.message.edit(content="This duel challenge has expired.", view=self)
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.accepted = True
+        self.stop()
+        # The main game logic starts here, after acceptance
+        await _start_duel_game(interaction, self.challenger_id, self.opponent_id, self.bet)
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"{interaction.user.display_name} has declined the duel.",
+            embed=None,
+            view=self
+        )
+
+
+class DuelGameView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int):
+        super().__init__(timeout=300.0) # 5 minutes for players to make their guess
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+
+    async def on_timeout(self):
+        # Find the game and resolve it as a push if it times out
+        if self.message.id in active_duels:
+            await _resolve_duel(self.message, timed_out=True)
+
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
+    async def higher_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _process_duel_guess(interaction, "higher")
+
+    @discord.ui.button(label="Lower", style=discord.ButtonStyle.secondary)
+    async def lower_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _process_duel_guess(interaction, "lower")
+
+
+async def _start_duel_game(interaction: discord.Interaction, challenger_id: int, opponent_id: int, bet: int):
+    """Prepares and starts the main phase of the duel."""
+    # Generate secret rolls for both players
+    challenger_roll = random.randint(1, 100)
+    opponent_roll = random.randint(1, 100)
+
+    # Store the complete game state
+    # NOTE: It's safer to use interaction.message.id if the message already exists.
+    # This part of your code is correct.
+    active_duels[interaction.message.id] = {
+        "challenger_id": challenger_id,
+        "opponent_id": opponent_id,
+        "bet": bet,
+        "challenger_roll": challenger_roll,
+        "opponent_roll": opponent_roll,
+        "challenger_guess": None,
+        "opponent_guess": None,
+        "message": interaction.message
+    }
+
+    challenger = await bot.fetch_user(challenger_id)
+    opponent = await bot.fetch_user(opponent_id)
+
+    # Update the main game message to the guessing interface
+    embed = discord.Embed(
+        title="🎲 Dice Duel In Progress! 🎲",
+        description=f"{challenger.display_name} vs. {opponent.display_name}\nBet: **{bet:,}** <:wbcoin:1398780929664745652>\n\n"
+                    f"`STATUS: WAITING FOR BOTH PLAYERS TO GUESS`",
+        color=0x7289DA
+    )
+    embed.add_field(name=challenger.display_name, value="`Waiting...`", inline=True)
+    embed.add_field(name=opponent.display_name, value="`Waiting...`", inline=True)
+    embed.set_footer(text="Look for your secret roll in a message only you can see!")
+
+    view = DuelGameView(challenger_id, opponent_id)
+    # The interaction from the "Accept" button is used to edit the original challenge message.
+    await interaction.response.edit_message(content="", embed=embed, view=view)
+
+    try:
+        # For the OPPONENT: Use a followup ephemeral message, because they initiated this interaction.
+        await interaction.followup.send(
+            f"**Your secret roll is: `{opponent_roll}`**. Guess if {challenger.display_name}'s roll is higher or lower!",
+            ephemeral=True
+        )
+
+        # For the CHALLENGER: We MUST send a DM, as we cannot target them with an ephemeral message here.
+        await challenger.send(
+            f"**Your secret roll is: `{challenger_roll}`**. Guess if {opponent.display_name}'s roll is higher or lower!"
+        )
+
+    except discord.Forbidden:
+        # Handle cases where the challenger has DMs disabled.
+        await interaction.followup.send(
+            f"Could not send a DM to {challenger.display_name}. They may have DMs disabled. The duel has been cancelled.",
+            ephemeral=True
+        )
+        # Clean up the duel
+        del active_duels[interaction.message.id]
+        await interaction.message.edit(content="Duel cancelled because a player could not be sent their roll.",
+                                       embed=None, view=None)
+        return
+
+
+async def _process_duel_guess(interaction: discord.Interaction, guess: str):
+    """Records a player's guess and checks if the game can be resolved."""
+    game_state = active_duels.get(interaction.message.id)
+    if not game_state:
+        return await interaction.response.send_message("This duel has expired.", ephemeral=True)
+
+    user_id = interaction.user.id
+    player_key = ""
+    if user_id == game_state["challenger_id"]:
+        player_key = "challenger"
+    elif user_id == game_state["opponent_id"]:
+        player_key = "opponent"
+    else:
+        return await interaction.response.send_message("You are not a part of this duel.", ephemeral=True)
+
+    if game_state[f"{player_key}_guess"] is not None:
+        return await interaction.response.send_message("You have already locked in your guess!", ephemeral=True)
+
+    game_state[f"{player_key}_guess"] = guess
+    await interaction.response.defer()  # Acknowledge the interaction
+
+    # Update the embed to show who has guessed
+    embed = interaction.message.embeds[0]
+    challenger_status = "`LOCKED IN`" if game_state["challenger_guess"] else "`Waiting...`"
+    opponent_status = "`LOCKED IN`" if game_state["opponent_guess"] else "`Waiting...`"
+    embed.set_field_at(0, name=embed.fields[0].name, value=challenger_status, inline=True)
+    embed.set_field_at(1, name=embed.fields[1].name, value=opponent_status, inline=True)
+    await interaction.message.edit(embed=embed)
+
+    # If both players have now guessed, resolve the duel
+    if game_state["challenger_guess"] and game_state["opponent_guess"]:
+        await _resolve_duel(interaction.message)
+
+
+async def _resolve_duel(message: discord.Message, timed_out=False):
+    """The final function to determine winners, calculate payouts, and display results."""
+    game_state = active_duels.pop(message.id, None)
+    if not game_state: return
+
+    c_id, o_id = game_state["challenger_id"], game_state["opponent_id"]
+    c_roll, o_roll = game_state["challenger_roll"], game_state["opponent_roll"]
+    c_guess, o_guess = game_state["challenger_guess"], game_state["opponent_guess"]
+    bet = game_state["bet"]
+
+    challenger = await bot.fetch_user(c_id)
+    opponent = await bot.fetch_user(o_id)
+
+    embed = discord.Embed(title="🎲 Duel Over! 🎲", color=0xFFC300)
+    embed.add_field(name=f"{challenger.display_name}'s Roll", value=f"🎲 `{c_roll}`", inline=True)
+    embed.add_field(name=f"{opponent.display_name}'s Roll", value=f"🎲`{o_roll}`", inline=True)
+
+    if timed_out or not c_guess or not o_guess:
+        embed.description = "The duel timed out. All bets are returned."
+        await message.edit(content="", embed=embed, view=None)
+        return
+
+    # Determine who was correct
+    challenger_correct = (c_guess == 'higher' and o_roll > c_roll) or \
+                         (c_guess == 'lower' and o_roll < c_roll)
+    opponent_correct = (o_guess == 'higher' and c_roll > o_roll) or \
+                       (o_guess == 'lower' and c_roll < o_roll)
+
+    # Handle the tie roll case
+    if c_roll == o_roll:
+        embed.description = f"A perfect tie! Both players rolled a **{c_roll}**. All bets are returned."
+        await message.edit(content="", embed=embed, view=None)
+        return
+
+    # Payout logic
+    if challenger_correct and not opponent_correct:
+        await modify_coin_adjustment(c_id, bet)
+        await modify_coin_adjustment(o_id, -bet)
+        embed.description = f"{challenger.display_name} guessed correctly and wins **{bet:,}** <:wbcoin:1398780929664745652>!"
+        trash_talk = f"Looks like {opponent.display_name} needs to work on their sixth sense."
+    elif not challenger_correct and opponent_correct:
+        await modify_coin_adjustment(o_id, bet)
+        await modify_coin_adjustment(c_id, -bet)
+        embed.description = f"{opponent.display_name} guessed correctly and wins **{bet:,}** <:wbcoin:1398780929664745652>!"
+        trash_talk = f"Better luck next time, {challenger.display_name}. Or maybe not."
+    else:  # Both correct OR both incorrect
+        embed.description = "Both players were correct (or both were wrong)! A push, all bets are returned."
+        trash_talk = "You both have amazing (or terrible) intuition. Scary."
+
+    embed.set_footer(text=trash_talk)
+    await message.edit(content="", embed=embed, view=None)
+
+
+@bot.command(name="fight")
+async def duel(ctx: commands.Context, opponent: discord.Member, bet: str):
+    """Challenges another player to a dice roll duel for coins."""
+    challenger = ctx.author
+
+    if challenger.id == opponent.id:
+        return await ctx.send("You can't duel yourself. Find some friends!")
+    if opponent.bot:
+        return await ctx.send("You can't duel a bot, they'd just read your mind.")
+    if any(challenger.id in g or opponent.id in g for g in
+           [active_blackjack_games, active_baccarat_games, active_duels]):
+        return await ctx.send("One of you is already in a game. Finish it before starting a new one!")
+
+    bet_amount = 0
+    # Handle the "all" bet keyword
+    if bet.lower() == 'all':
+        challenger_bal = await get_effective_balance(challenger.id)
+        opponent_bal = await get_effective_balance(opponent.id)
+        bet_amount = min(challenger_bal, opponent_bal)
+        if bet_amount <= 0:
+            return await ctx.send("The poorest player has no coins to bet!")
+    else:
+        try:
+            bet_amount = int(bet)
+            if bet_amount <= 0:
+                return await ctx.send("You must bet a positive amount of coins.")
+        except ValueError:
+            return await ctx.send("Please provide a valid number for your bet, or use 'all'.")
+
+    # Check if both players can afford the bet
+    challenger_bal = await get_effective_balance(challenger.id)
+    if challenger_bal < bet_amount:
+        return await ctx.send(f"You don't have enough coins for that bet! You have {challenger_bal:,} 🪙.")
+
+    opponent_bal = await get_effective_balance(opponent.id)
+    if opponent_bal < bet_amount:
+        return await ctx.send(
+            f"{opponent.display_name} doesn't have enough coins for that bet! They have {opponent_bal:,} 🪙.")
+
+    # Create the initial challenge message
+    embed = discord.Embed(
+        title="⚔️ A Duel is Being Called! ⚔️",
+        description=f"{challenger.mention} has challenged {opponent.mention} to a dice duel!\n\n"
+                    f"**Bet Amount:** `{bet_amount:,}` <:wbcoin:1398780929664745652>",
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text=f"{opponent.display_name} has 2 minutes to respond.")
+
+    view = DuelChallengeView(challenger.id, opponent.id, bet_amount)
+    challenge_message = await ctx.send(embed=embed, view=view)
+    view.message = challenge_message  # Give the view a reference to its own message for timeouts
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
