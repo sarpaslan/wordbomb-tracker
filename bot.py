@@ -698,11 +698,11 @@ async def get_coins_leaderboard_data() -> list:
     # --- Step 2: Calculate and compile the final list ---
     leaderboard_entries = []
     for user_id, stats in user_stats.items():
-        message_coins = stats["messages"] * 70
-        bug_coins = stats["bugs"] * 45000
-        idea_coins = stats["ideas"] * 34000
-        voice_coins = int((stats["voice_seconds"] / 3600) * 4000)
-        trivia_coins = stats["trivia"] * 30000
+        message_coins = stats["messages"] * 75
+        bug_coins = stats["bugs"] * 50000
+        idea_coins = stats["ideas"] * 40000
+        voice_coins = int((stats["voice_seconds"] / 3600) * 5000)
+        trivia_coins = stats["trivia"] * 20000
         total_coins = message_coins + bug_coins + idea_coins + voice_coins + trivia_coins + stats["adjustment"]
         if total_coins > 0:
             leaderboard_entries.append((user_id, total_coins))
@@ -1394,26 +1394,26 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
 
     # 1. Calculate from SQLite stats (Messages, Bugs, Ideas, Voice)
     async with aiosqlite.connect("server_data.db") as db:
-        # Messages: 70 coins per message
+        # Messages: 75 coins per message
         msg_cursor = await db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,))
         if msg_row := await msg_cursor.fetchone():
-            total_coins += msg_row[0] * 70
+            total_coins += msg_row[0] * 75
 
-        # Bug Reports: 45,000 coins per report
+        # Bug Reports: 50,000 coins per report
         bug_cursor = await db.execute("SELECT count FROM bug_points WHERE user_id = ?", (user_id,))
         if bug_row := await bug_cursor.fetchone():
-            total_coins += bug_row[0] * 45000
+            total_coins += bug_row[0] * 50000
 
-        # Ideas: 34,000 coins per idea
+        # Ideas: 40,000 coins per idea
         idea_cursor = await db.execute("SELECT count FROM idea_points WHERE user_id = ?", (user_id,))
         if idea_row := await idea_cursor.fetchone():
-            total_coins += idea_row[0] * 34000
+            total_coins += idea_row[0] * 40000
 
-        # Voice Time: 2,000 coins per hour
+        # Voice Time: 5,000 coins per hour
         voice_cursor = await db.execute("SELECT seconds FROM voice_time WHERE user_id = ?", (user_id,))
         if voice_row := await voice_cursor.fetchone():
             hours = voice_row[0] / 3600
-            total_coins += int(hours * 4000)
+            total_coins += int(hours * 5000)
 
     # 2. Calculate from MongoDB stats (Trivia Questions)
     if questions_collection is not None:
@@ -1426,8 +1426,8 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
             result = await questions_collection.aggregate(pipeline).to_list(length=1)
             if result:
                 suggestion_count = result[0]['total_suggestions']
-                # Trivia: 35,000 coins per suggestion
-                total_coins += suggestion_count * 30000
+                # Trivia: 20,000 coins per suggestion
+                total_coins += suggestion_count * 20000
         except Exception as e:
             print(f"[ERROR] Could not fetch trivia stats for {user_id}: {e}")
 
