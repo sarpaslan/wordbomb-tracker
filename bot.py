@@ -1492,7 +1492,7 @@ async def coinflip(ctx: commands.Context, amount: int):
         result_message = await ctx.send(embed=flipping_embed)
         await asyncio.sleep(3.0)
 
-        win_chance = 44
+        win_chance = 50
         won = random.randint(1, 100) <= win_chance
 
         # Determine the net change and update the adjustment
