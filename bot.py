@@ -1960,7 +1960,7 @@ async def _play_baccarat_hand(interaction: discord.Interaction, bet_on: str):
     banker_value = _calculate_baccarat_value(banker_hand)
 
     embed = interaction.message.embeds[0]
-    embed.description = f"You bet **{bet_amount:,}** 🪙 on **{bet_on}**.\nDealing the cards..."
+    embed.description = f"You bet **{bet_amount:,}** <:wbcoin:1398780929664745652> on **{bet_on}**.\nDealing the cards..."
     embed.clear_fields()
     embed.add_field(name="Player's Hand", value=hand_to_string(player_hand), inline=True)
     embed.add_field(name="Banker's Hand", value=hand_to_string(banker_hand), inline=True)
@@ -2089,6 +2089,74 @@ async def baccarat(ctx: commands.Context, amount: int):
         "deck": deck,
         "message_id": game_message.id
     }
+
+@bot.command(name="bal", aliases=["balance", "wallet"])
+async def bal(ctx: commands.Context, member: discord.Member = None):
+    """Displays a user's coin balance in a futuristic-themed embed."""
+
+    # If no member is specified, the target is the person who ran the command.
+    target_user = member or ctx.author
+
+    # Prevent checking the balance of bots.
+    if target_user.bot:
+        return await ctx.send("`ANALYSIS FAILED: TARGET IS A NON-ECONOMIC UNIT (BOT).`")
+
+    # --- 1. Initial "Processing" Message ---
+    # This builds suspense and makes the command feel more interactive.
+    processing_embed = discord.Embed(
+        title="ACCESSING WALLET DATASTREAM...",
+        description=f"`Requesting asset profile for operator: {target_user.name}`",
+        color=discord.Color.dark_blue() # A dark, techy color
+    )
+    processing_embed.set_thumbnail(url="https://i.imgur.com/S2p8c5A.gif") # A simple loading GIF
+    processing_msg = await ctx.send(embed=processing_embed)
+
+    # --- 2. Fetch All Necessary Balance Data ---
+    # We get the total balance and also the components for a breakdown.
+    try:
+        total_balance = await get_effective_balance(target_user.id)
+        stats_balance = await calculate_total_coins_from_stats(target_user.id)
+        gambling_adjustment = await get_coin_adjustment(target_user.id)
+    except Exception as e:
+        await processing_msg.edit(content=f"`CRITICAL ERROR: Could not retrieve financial data. Log: {e}`", embed=None)
+        return
+
+    # --- 3. Build the Final Futuristic Embed ---
+    final_embed = discord.Embed(
+        title="<:wbcoin:1398780929664745652> DIGITAL ASSET PROFILE",
+        color=discord.Color.cyan() # A bright, neon "cyberpunk" color
+    )
+
+    # Use the target's avatar and name in the author field for personalization.
+    final_embed.set_author(name=f"IDENTITY SCAN: {target_user.display_name}", icon_url=target_user.display_avatar.url)
+
+    # The main futuristic GIF that makes it feel like a HUD.
+    final_embed.set_image(url="https://i.imgur.com/8QpS2b3.gif")
+
+    # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
+    final_embed.add_field(
+        name="[ ASSET ANALYSIS ]",
+        value=f"> Stat-Based Earnings: `{stats_balance:,}`\n"
+              f"> Gambling Net Profit/Loss: `{gambling_adjustment:,}`",
+        inline=False
+    )
+
+    # The main event: the total balance, formatted to stand out.
+    final_embed.add_field(
+        name="[ CURRENT HOLDINGS ]",
+        value=f"## `{total_balance:,}`", # "##" makes the text larger
+        inline=False
+    )
+
+    # A themed footer to complete the look.
+    final_embed.set_footer(text=f"NODE: {ctx.guild.name} // CONNECTION SECURE")
+
+    # --- 4. Final Update ---
+    # A short delay to make the "processing" feel real.
+    await asyncio.sleep(2)
+
+    # Edit the original message to replace the "processing" embed with the final one.
+    await processing_msg.edit(embed=final_embed)
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
