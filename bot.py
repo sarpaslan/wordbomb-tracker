@@ -1497,13 +1497,6 @@ async def coinflip(ctx: commands.Context, amount: int):
     active_coinflips.add(author.id)
 
     try:
-        flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
-                                       color=discord.Color.blue()).set_image(
-            url="https://discord.wordbomb.io/coin_flip.gif?v=2")
-        result_message = await ctx.send(embed=flipping_embed)
-
-        # The 3-second animation plays
-        await asyncio.sleep(3.0)
 
         # --- All critical calculations happen BEFORE the unlock ---
         win_chance = 50
@@ -1511,6 +1504,21 @@ async def coinflip(ctx: commands.Context, amount: int):
         net_change = amount if won else -amount
         success = await modify_coin_adjustment(author.id, net_change)
         # --- Database is now safely updated ---
+
+        if won:
+            animation_duration = 3.0
+            final_image_url = "https://discord.wordbomb.io/coin_win.png?v=2"
+        else:
+            animation_duration = 3.5
+            final_image_url = "https://discord.wordbomb.io/coin_lost.png?v=2"
+
+        flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
+                                       color=discord.Color.blue()).set_image(
+            url="https://discord.wordbomb.io/coin_flip.gif?v=2")
+        result_message = await ctx.send(embed=flipping_embed)
+
+        # The 3-second animation plays
+        await asyncio.sleep(animation_duration)
 
         if not success:
             error_embed = discord.Embed(title="Database Error",
@@ -1525,26 +1533,20 @@ async def coinflip(ctx: commands.Context, amount: int):
         new_balance = current_balance + net_change
 
         # Edit the message to the static win/loss image
-        result_image_url = "https://discord.wordbomb.io/coin_win.png?v=2" if won else "https://discord.wordbomb.io/coin_lost.png?v=2"
         final_embed = discord.Embed(title="The coin has landed!",
                                     color=discord.Color.green() if won else discord.Color.red()).set_image(
-            url=result_image_url)
+            url=final_image_url)
         await result_message.edit(embed=final_embed)
 
-        # --- THIS IS YOUR SUGGESTED CHANGE ---
-        # The user is unlocked HERE, right after the result is known and saved.
-        # They can now start another coinflip while the final text appears.
         active_coinflips.remove(author.id)
-        # --- END OF CHANGE ---
 
-        # The final text update happens after the unlock
         await asyncio.sleep(1)
 
         final_embed.title = "🎉 You Won! 🎉" if won else "😭 You Lost! 😭"
-        final_embed.description = f"You won **{amount:,}** 🪙!" if won else f"You lost **{amount:,}** 🪙."
+        final_embed.description = f"You won **{amount:,}** <:wbcoin:1398780929664745652>!" if won else f"You lost **{amount:,}** <:wbcoin:1398780929664745652>."
         final_embed.set_author(name=f"{author.display_name}'s Coinflip", icon_url=author.display_avatar.url)
-        final_embed.add_field(name="Your Bet", value=f"{amount:,} 🪙")
-        final_embed.add_field(name="New Balance", value=f"{new_balance:,} 🪙")
+        final_embed.add_field(name="Your Bet", value=f"{amount:,} <:wbcoin:1398780929664745652>")
+        final_embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>")
         await result_message.edit(embed=final_embed)
 
     except Exception as e:
@@ -1631,12 +1633,12 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
         # net_change is already -bet
         final_embed.title = "❌ Bust! ❌"
         final_embed.color = discord.Color.dark_red()
-        final_embed.description = f"You went over 21 and lost your bet of **{bet:,}** <:wbcurrency:1398780929664745652>."
+        final_embed.description = f"You went over 21 and lost your bet of **{bet:,}** <:wbcoin:1398780929664745652>."
     else:  # 'loss' or 'timeout'
         # net_change is already -bet
         final_embed.title = "Game Timed Out" if result == 'timeout' else "You Lose"
         final_embed.color = discord.Color.dark_grey() if result == 'timeout' else discord.Color.red()
-        final_embed.description = f"You lost your bet of **{bet:,}** 🪙."
+        final_embed.description = f"You lost your bet of **{bet:,}** <:wbcoin:1398780929664745652>."
 
     # Apply the single adjustment to the database
     success = await modify_coin_adjustment(user_id, net_change)
@@ -1648,7 +1650,7 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
     # Fetch the user's final, updated balance AFTER the game's transaction
     new_balance = await get_effective_balance(user_id)
     balance_field_name = "Current Balance" if not success else "New Balance"
-    final_embed.add_field(name=balance_field_name, value=f"{new_balance:,} 🪙", inline=False)
+    final_embed.add_field(name=balance_field_name, value=f"{new_balance:,} <:wbcoin:1398780929664745652>", inline=False)
 
     # Clean up and update the message
     del active_blackjack_games[user_id]
