@@ -2125,6 +2125,8 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # We get the total balance and also the components for a breakdown.
     try:
         total_balance = await get_effective_balance(target_user.id)
+        stats_balance = await calculate_total_coins_from_stats(target_user.id)
+        gambling_adjustment = await get_coin_adjustment(target_user.id)
     except Exception as e:
         await processing_msg.edit(content=f"`CRITICAL ERROR: Could not retrieve financial data. Log: {e}`", embed=None)
         return
@@ -2138,12 +2140,22 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # Use the target's avatar and name in the author field for personalization.
     final_embed.set_author(name=f"IDENTITY SCAN: {target_user.display_name}", icon_url=target_user.display_avatar.url)
 
+    # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
+    final_embed.add_field(
+        name="[ ASSET ANALYSIS ]",
+        value=f"> Stat-Based Earnings: `{stats_balance:,}`\n"
+              f"> Gambling Net Profit/Loss: `{gambling_adjustment:,}`",
+        inline=False
+    )
+
     # The main event: the total balance, formatted to stand out.
     final_embed.add_field(
         name="[ CURRENT HOLDINGS ]",
         value=f"<:wbcoin:1398780929664745652> `{total_balance:,}`", # "##" makes the text larger
         inline=False
     )
+
+    # --- 4. Final Update ---
 
     # Edit the original message to replace the "processing" embed with the final one.
     await processing_msg.edit(embed=final_embed)
