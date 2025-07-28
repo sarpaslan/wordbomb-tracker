@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import motor.motor_asyncio
 import requests
 import asyncio
+import ast
 
 # Load token
 load_dotenv()
@@ -2759,6 +2760,89 @@ async def roulette(ctx: commands.Context):
     game_message = await ctx.send(embed=embed, view=view)
     view.message = game_message
     active_roulette_games[game_message.id] = game_state
+
+@bot.command(name="r")
+async def roulette_solo(ctx, bet_dict: str):
+    user = ctx.author
+
+    try:
+        bets = ast.literal_eval(bet_dict)
+    except Exception as e:
+        return await ctx.send("❌ Invalid bet format. Make sure it's a valid Python dictionary.")
+
+    # Fetch current balance
+    balance = await get_effective_balance(user.id)
+
+    # Calculate total bet amount
+    total_bet = 0
+    if 'red/black' in bets:
+        total_bet += bets['red/black']
+    if 'dozens' in bets:
+        total_bet += bets['dozens']
+    if 'single_numbers' in bets:
+        total_bet += sum(bets['single_numbers'].values())
+
+    if total_bet <= 0:
+        return await ctx.send("❌ Total bet must be greater than 0.")
+    if total_bet > balance:
+        return await ctx.send(f"❌ You don't have enough balance. You have **{balance:,}** coins.")
+
+    # Pick a winning pocket
+    winning_key = random.choice(list(ROULETTE_POCKETS.keys()))
+    winning_color = ROULETTE_POCKETS[winning_key]['color']
+    winning_number = ROULETTE_POCKETS[winning_key]['number']
+
+    # Payouts
+    winnings = 0
+    results = []
+
+    # Red/Black
+    if 'red/black' in bets:
+        rb_bet = bets['red/black']
+        if winning_color in ['red', 'black']:
+            winnings += rb_bet * 2
+            results.append(f"🎯 Red/Black hit! ({winning_color}) +{rb_bet}")
+        else:
+            results.append(f"❌ Red/Black lost ({winning_color})")
+
+    # Dozens
+    if 'dozens' in bets and isinstance(winning_number, int):
+        dz_bet = bets['dozens']
+        if 1 <= winning_number <= 12:
+            winnings += dz_bet * 3
+            results.append(f"🎯 Dozen 1 hit! ({winning_number}) +{dz_bet*2}")
+        elif 13 <= winning_number <= 24:
+            winnings += dz_bet * 3
+            results.append(f"🎯 Dozen 2 hit! ({winning_number}) +{dz_bet*2}")
+        elif 25 <= winning_number <= 36:
+            winnings += dz_bet * 3
+            results.append(f"🎯 Dozen 3 hit! ({winning_number}) +{dz_bet*2}")
+        else:
+            results.append(f"❌ Dozen lost ({winning_number})")
+
+    # Single Numbers
+    if 'single_numbers' in bets:
+        for num, amt in bets['single_numbers'].items():
+            if num == winning_number:
+                winnings += amt * 36
+                results.append(f"🎯 Number {num} hit! +{amt*35}")
+            else:
+                results.append(f"❌ Number {num} lost")
+
+    # Update balance
+    net = winnings - total_bet
+    await update_wordbomb_wallet(user.id, net)
+
+    # Format result message
+    result_msg = (
+        f"🎰 Winning Pocket: **{winning_key}** ({winning_color})\n"
+        f"💰 Total Bet: {total_bet:,}\n"
+        f"📈 Winnings: {winnings:,}\n"
+        f"🧾 Net Change: {net:+,} coins\n\n"
+        + "\n".join(results[:15])  # limit to 15 lines
+    )
+
+    await ctx.send(result_msg)
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
