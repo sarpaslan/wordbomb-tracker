@@ -2125,8 +2125,6 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # We get the total balance and also the components for a breakdown.
     try:
         total_balance = await get_effective_balance(target_user.id)
-        stats_balance = await calculate_total_coins_from_stats(target_user.id)
-        gambling_adjustment = await get_coin_adjustment(target_user.id)
     except Exception as e:
         await processing_msg.edit(content=f"`CRITICAL ERROR: Could not retrieve financial data. Log: {e}`", embed=None)
         return
@@ -2139,14 +2137,6 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
 
     # Use the target's avatar and name in the author field for personalization.
     final_embed.set_author(name=f"IDENTITY SCAN: {target_user.display_name}", icon_url=target_user.display_avatar.url)
-
-    # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
-    final_embed.add_field(
-        name="[ ASSET ANALYSIS ]",
-        value=f"> Stat-Based Earnings: `{stats_balance:,}`\n"
-              f"> Gambling Net Profit/Loss: `{gambling_adjustment:,}`",
-        inline=False
-    )
 
     # The main event: the total balance, formatted to stand out.
     final_embed.add_field(
@@ -2740,7 +2730,7 @@ async def addcoins(ctx: commands.Context, member: discord.Member, amount: int):
         return await ctx.send("❌ You cannot give coins to a bot.")
     if amount == 0:
         return await ctx.send("❌ The amount cannot be zero.")
-    
+
     ALLOWED_USER_ID = 849827666064048178
 
     if ctx.author.id != ALLOWED_USER_ID:
