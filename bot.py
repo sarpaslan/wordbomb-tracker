@@ -37,10 +37,31 @@ active_coinflips = set()
 SUITS = {"Spades": "♠️", "Hearts": "♥️", "Clubs": "♣️", "Diamonds": "♦️"}
 RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11}
 
+# --- ROULETTE GAME CONSTANTS AND STATE ---
+
+# Represents the 38 pockets of an American Roulette wheel
+ROULETTE_POCKETS = {
+    0: "green", 1: "red", 2: "black", 3: "red", 4: "black", 5: "red",
+    6: "black", 7: "red", 8: "black", 9: "red", 10: "black", 11: "black",
+    12: "red", 13: "black", 14: "red", 15: "black", 16: "red", 17: "black",
+    18: "red", 19: "red", 20: "black", 21: "red", 22: "black", 23: "red",
+    24: "black", 25: "red", 26: "black", 27: "red", 28: "black", 29: "black",
+    30: "red", 31: "black", 32: "red", 33: "black", 34: "red", 35: "black",
+    36: "red", "00": "green"
+}
+# Define columns and dozens for betting
+COLUMN_1 = {1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34}
+COLUMN_2 = {2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35}
+COLUMN_3 = {3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36}
+DOZEN_1 = set(range(1, 13))
+DOZEN_2 = set(range(13, 25))
+DOZEN_3 = set(range(25, 37))
+
 # This dictionary will hold all active games, with the user's ID as the key.
 active_blackjack_games = {}
 active_baccarat_games = {}
 active_duels = {}
+active_roulette_games = {}
 
 # --- MongoDB Setup ---
 client = None
@@ -2458,6 +2479,265 @@ async def duel(ctx: commands.Context, opponent: discord.Member, bet: str):
     view = DuelChallengeView(challenger.id, opponent.id, bet_amount)
     challenge_message = await ctx.send(embed=embed, view=view)
     view.message = challenge_message  # Give the view a reference to its own message for timeouts
+
+# Roulette
+class RouletteBetModal(ui.Modal, title='Place Your Bet'):
+    """A pop-up modal to ask the user how much to bet on a specific option."""
+
+    def __init__(self, bet_name: str, view: 'RouletteBettingView'):
+        super().__init__()
+        self.bet_name = bet_name
+        self.betting_view = view
+        self.amount_input = ui.TextInput(
+            label=f"Amount to bet on {bet_name}",
+            placeholder="Enter a number or 'all'",
+            required=True
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        chips_remaining = self.betting_view.total_bet - self.betting_view.chips_placed
+        value = self.amount_input.value.lower()
+        amount_to_bet = 0
+
+        if value == 'all':
+            amount_to_bet = chips_remaining
+        else:
+            try:
+                amount_to_bet = int(value)
+            except ValueError:
+                await interaction.response.send_message("Please enter a valid number or 'all'.", ephemeral=True)
+                return
+
+        if amount_to_bet <= 0:
+            await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
+            return
+        if amount_to_bet > chips_remaining:
+            await interaction.response.send_message(f"You only have {chips_remaining:,} chips left to bet!",
+                                                    ephemeral=True)
+            return
+
+        # Add the bet to the dictionary, combining amounts if the bet already exists
+        self.betting_view.bets[self.bet_name] = self.betting_view.bets.get(self.bet_name, 0) + amount_to_bet
+        self.betting_view.chips_placed += amount_to_bet
+
+        # Update the main embed
+        embed = self.betting_view.update_embed()
+        await interaction.response.edit_message(embed=embed, view=self.betting_view)
+
+
+class RouletteBettingView(ui.View):
+    """The main view for placing multiple roulette bets."""
+
+    def __init__(self, user_id: int, total_bet: int):
+        super().__init__(timeout=300.0)
+        self.user_id = user_id
+        self.total_bet = total_bet
+        self.bets = {}  # e.g., {"Red": 100, "1-12": 50}
+        self.chips_placed = 0
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This is not your roulette game.", ephemeral=True)
+            return False
+        return True
+
+    def update_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Place Your Bets!",
+            description=f"You have **{self.total_bet - self.chips_placed:,}** <:wbcoin:1398780929664745652> chips remaining.",
+            color=discord.Color.dark_green()
+        )
+        if not self.bets:
+            embed.add_field(name="Current Bets", value="No bets placed yet.", inline=False)
+        else:
+            bet_summary = "\n".join([f"**{name}**: `{amount:,}`" for name, amount in self.bets.items()])
+            embed.add_field(name="Your Bets", value=bet_summary, inline=False)
+        embed.set_footer(text="Click a button to place a bet. Click Spin when ready.")
+        return embed
+
+    async def on_timeout(self):
+        if self.user_id in active_roulette_games:
+            del active_roulette_games[self.user_id]
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(content="This roulette game has expired.", embed=None, view=self)
+
+    async def open_bet_modal(self, interaction: discord.Interaction, bet_name: str):
+        """Helper function to open the betting modal."""
+        if self.chips_placed >= self.total_bet:
+            await interaction.response.send_message("You have placed all your chips!", ephemeral=True)
+            return
+        await interaction.response.send_modal(RouletteBetModal(bet_name, self))
+
+    # --- Betting Buttons ---
+    @ui.button(label="Red", style=discord.ButtonStyle.red, row=0)
+    async def bet_red(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "Red")
+
+    @ui.button(label="Black", style=discord.ButtonStyle.secondary, row=0)
+    async def bet_black(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "Black")
+
+    @ui.button(label="Odd", style=discord.ButtonStyle.primary, row=0)
+    async def bet_odd(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "Odd")
+
+    @ui.button(label="Even", style=discord.ButtonStyle.primary, row=0)
+    async def bet_even(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "Even")
+
+    @ui.button(label="1-18", style=discord.ButtonStyle.primary, row=1)
+    async def bet_low(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "1-18")
+
+    @ui.button(label="19-36", style=discord.ButtonStyle.primary, row=1)
+    async def bet_high(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "19-36")
+
+    @ui.button(label="1st Dozen (1-12)", style=discord.ButtonStyle.green, row=2)
+    async def bet_1st_dozen(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "1st Dozen")
+
+    @ui.button(label="2nd Dozen (13-24)", style=discord.ButtonStyle.green, row=2)
+    async def bet_2nd_dozen(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "2nd Dozen")
+
+    @ui.button(label="3rd Dozen (25-36)", style=discord.ButtonStyle.green, row=2)
+    async def bet_3rd_dozen(self, i: discord.Interaction, b: ui.Button):
+        await self.open_bet_modal(i, "3rd Dozen")
+
+    @ui.button(label="Reset Bets", style=discord.ButtonStyle.grey, row=4)
+    async def reset_bets(self, interaction: discord.Interaction, button: ui.Button):
+        self.bets.clear()
+        self.chips_placed = 0
+        embed = self.update_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Spin the Wheel!", style=discord.ButtonStyle.success, row=4)
+    async def spin_wheel(self, interaction: discord.Interaction, button: ui.Button):
+        if self.chips_placed == 0:
+            await interaction.response.send_message("You must place at least one bet before spinning!", ephemeral=True)
+            return
+
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _run_roulette_spin(interaction, self)
+
+
+async def _run_roulette_spin(interaction: discord.Interaction, view: RouletteBettingView):
+    """Handles the wheel spinning animation and result calculation."""
+    user = interaction.user
+    winning_number_key = random.choice(list(ROULETTE_POCKETS.keys()))
+    winning_number = int(winning_number_key) if str(winning_number_key).isdigit() else winning_number_key
+    winning_color = ROULETTE_POCKETS[winning_number_key]
+
+    # Animation
+    spinning_embed = discord.Embed(title="No More Bets!", description="The wheel is spinning...", color=0x7289DA)
+    await interaction.message.edit(embed=spinning_embed)
+    await asyncio.sleep(2)
+
+    color_emoji = "🔴" if winning_color == "red" else "⚫" if winning_color == "black" else "🟢"
+    result_embed = discord.Embed(
+        title="✨ Wheel Landed! ✨",
+        description=f"The ball landed on **{color_emoji} {winning_number_key} {color_emoji}**",
+        color=discord.Color.from_str(
+            "#FF4500" if winning_color == "red" else "#2C2F33" if winning_color == "black" else "#228B22")
+    )
+
+    # --- Payout Calculation ---
+    total_payout = 0
+    results_breakdown = []
+
+    for bet_name, amount in view.bets.items():
+        won = False
+        payout_rate = 0
+        if winning_number not in [0, '00']:  # Most outside bets lose on green
+            if bet_name == "Red" and winning_color == "red":
+                won, payout_rate = True, 1
+            elif bet_name == "Black" and winning_color == "black":
+                won, payout_rate = True, 1
+            elif bet_name == "Odd" and winning_number % 2 != 0:
+                won, payout_rate = True, 1
+            elif bet_name == "Even" and winning_number % 2 == 0:
+                won, payout_rate = True, 1
+            elif bet_name == "1-18" and winning_number in range(1, 19):
+                won, payout_rate = True, 1
+            elif bet_name == "19-36" and winning_number in range(19, 37):
+                won, payout_rate = True, 1
+            elif bet_name == "1st Dozen" and winning_number in DOZEN_1:
+                won, payout_rate = True, 2
+            elif bet_name == "2nd Dozen" and winning_number in DOZEN_2:
+                won, payout_rate = True, 2
+            elif bet_name == "3rd Dozen" and winning_number in DOZEN_3:
+                won, payout_rate = True, 2
+
+        if won:
+            win_amount = amount * payout_rate
+            total_payout += win_amount + amount  # Return original bet + winnings
+            results_breakdown.append(f"✅ Your **{bet_name}** bet won **{win_amount:,}**!")
+        else:
+            results_breakdown.append(f"❌ Your **{bet_name}** bet lost.")
+
+    net_result = total_payout - view.chips_placed
+    await modify_coin_adjustment(user.id, net_result)
+    new_balance = await get_effective_balance(user.id)
+
+    result_embed.add_field(name="Your Bets Breakdown", value="\n".join(results_breakdown), inline=False)
+    if net_result > 0:
+        result_embed.add_field(name="Result: PROFIT",
+                               value=f"You won a net total of **{net_result:,}** <:wbcoin:1398780929664745652>!",
+                               inline=False)
+    elif net_result < 0:
+        result_embed.add_field(name="Result: LOSS",
+                               value=f"You lost a net total of **{-net_result:,}** <:wbcoin:1398780929664745652>.",
+                               inline=False)
+    else:
+        result_embed.add_field(name="Result: PUSH", value="You broke even!", inline=False)
+
+    result_embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>", inline=False)
+
+    await interaction.message.edit(embed=result_embed, view=None)
+    if user.id in active_roulette_games:
+        del active_roulette_games[user.id]
+
+
+@bot.command(name="roulette")
+async def roulette(ctx: commands.Context, bet: str):
+    """Starts a game of casino roulette."""
+    player = ctx.author
+
+    if any(player.id in g for g in
+           [active_blackjack_games, active_baccarat_games, active_duels, active_roulette_games]):
+        return await ctx.send("You are already in a game. Finish it before starting a new one!")
+
+    player_bal = await get_effective_balance(player.id)
+    bet_amount = 0
+
+    if bet.lower() == 'all':
+        bet_amount = player_bal
+        if bet_amount <= 0:
+            return await ctx.send("You have no coins to bet!")
+    else:
+        try:
+            bet_amount = int(bet)
+            if bet_amount <= 0:
+                return await ctx.send("You must bet a positive amount.")
+        except ValueError:
+            return await ctx.send("Please provide a valid number for your bet, or use 'all'.")
+
+    if player_bal < bet_amount:
+        return await ctx.send(
+            f"You don't have enough coins! You only have {player_bal:,} <:wbcoin:1398780929664745652>.")
+
+    view = RouletteBettingView(user_id=player.id, total_bet=bet_amount)
+    initial_embed = view.update_embed()
+
+    game_message = await ctx.send(f"{player.mention}, your roulette table is ready.", embed=initial_embed, view=view)
+    view.message = game_message
+    active_roulette_games[player.id] = True  # Mark user as in-game
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
