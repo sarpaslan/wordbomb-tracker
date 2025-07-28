@@ -1872,7 +1872,7 @@ async def blackjack(ctx: commands.Context, amount: str):
 
     # 2. Create dynamic footer text to give the user feedback
     footer_text = f"Your Bet: {bet_amount:,} coins"
-    if not can_double_down and not is_all_in:
+    if not can_double_down:
         footer_text += " (Not enough to Double Down)"
 
     embed = discord.Embed(title=f"{author.display_name}'s Blackjack Game", color=0x2E3136)
@@ -2119,7 +2119,6 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
         description=f"`Requesting asset profile for operator: {target_user.name}`",
         color=0x206694 # A dark, techy color
     )
-    processing_embed.set_thumbnail(url="https://tenor.com/view/amalie-steiness-borregaard-loading-gif-loading-gif-25192894") # A simple loading GIF
     processing_msg = await ctx.send(embed=processing_embed)
 
     # --- 2. Fetch All Necessary Balance Data ---
@@ -2727,6 +2726,76 @@ async def roulette(ctx: commands.Context):
     game_message = await ctx.send(embed=embed, view=view)
     view.message = game_message
     active_roulette_games[game_message.id] = game_state
+
+
+@bot.command(name="addcoins", aliases=["award"])
+async def addcoins(ctx: commands.Context, member: discord.Member, amount: int):
+    """
+    Awards a specified amount of coins to a user. (Admin Only)
+
+    This command can also be used to remove coins by providing a negative number.
+    """
+    # 1. --- VALIDATION ---
+    if member.bot:
+        return await ctx.send("❌ You cannot give coins to a bot.")
+    if amount == 0:
+        return await ctx.send("❌ The amount cannot be zero.")
+    
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this powerful command.")
+
+    # 2. --- THE TRANSACTION ---
+    try:
+        # We use the existing function to modify the user's coin total.
+        # This works for both positive (adding) and negative (removing) amounts.
+        success = await modify_coin_adjustment(member.id, amount)
+        if not success:
+            await ctx.send("❌ A database error occurred. The transaction could not be completed.")
+            return
+
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected error occurred: {e}")
+        print(f"[ERROR] An exception occurred during the addcoins command: {e}")
+        return
+
+    # 3. --- CONFIRMATION ---
+    # Fetch the user's new balance to display it for confirmation.
+    new_balance = await get_effective_balance(member.id)
+
+    # Create a clear and informative embed for the log/confirmation.
+    action_text = "Awarded" if amount > 0 else "Deducted"
+    color = discord.Color.green() if amount > 0 else discord.Color.red()
+
+    embed = discord.Embed(
+        title=f"✅ Admin Action: Coins {action_text}",
+        description=f"**{abs(amount):,}** <:wbcoin:1398780929664745652> have been {action_text.lower()} for {member.mention}.",
+        color=color
+    )
+
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Target User", value=member.mention, inline=True)
+    embed.add_field(name=f"{member.display_name}'s New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>",
+                    inline=False)
+    embed.set_footer(text="The change has been successfully applied.")
+
+    await ctx.send(embed=embed)
+
+
+@addcoins.error
+async def addcoins_error(ctx, error):
+    """Handles errors for the addcoins command specifically."""
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You do not have the required `Administrator` permission to use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(
+            "❌ Incorrect usage. You need to specify a member and an amount.\n**Example:** `!addcoins @User 50000`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Couldn't find that member or the amount provided was not a valid number.")
+    else:
+        # For other errors, you might want them to go to your general error handler
+        print(f"An unhandled error occurred in the addcoins command: {error}")
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
