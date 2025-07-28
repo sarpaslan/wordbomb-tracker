@@ -2145,10 +2145,6 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
         inline=False
     )
 
-    # --- 4. Final Update ---
-    # A short delay to make the "processing" feel real.
-    await asyncio.sleep(2)
-
     # Edit the original message to replace the "processing" embed with the final one.
     await processing_msg.edit(embed=final_embed)
 
