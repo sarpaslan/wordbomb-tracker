@@ -2795,6 +2795,101 @@ async def addcoins_error(ctx, error):
         # For other errors, you might want them to go to your general error handler
         print(f"An unhandled error occurred in the addcoins command: {error}")
 
+
+@bot.command(name="removestats", aliases=["rempoints"])
+async def removestats(ctx: commands.Context, member: discord.Member, category: str, amount: int):
+    """
+    Removes a specified amount of points from a user in a specific category. (Admin Only)
+
+    Valid Categories: messages, bugs, ideas, voice
+    This command does NOT affect coins or trivia. Use !addcoins for coin changes.
+    """
+    # --- 1. Input Validation ---
+    category = category.lower()
+    if member.bot:
+        return await ctx.send("❌ You cannot modify stats for a bot.")
+    if amount <= 0:
+        return await ctx.send("❌ The amount to remove must be a positive number.")
+
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this powerful command.")
+
+    # --- 2. Map Category to Database Table and Column ---
+    # This dictionary makes the code clean and easy to expand
+    table_map = {
+        "messages": ("messages", "count"),
+        "bugs": ("bug_points", "count"),
+        "ideas": ("idea_points", "count"),
+        "voice": ("voice_time", "seconds")
+    }
+
+    if category not in table_map:
+        valid_cats = ", ".join(table_map.keys())
+        await ctx.send(f"❌ Invalid category. Please use one of the following: `{valid_cats}`")
+        return
+
+    table_name, column_name = table_map[category]
+
+    # --- 3. Database Interaction ---
+    try:
+        async with aiosqlite.connect("server_data.db") as db:
+            # First, get the user's current score to ensure we don't go below zero
+            cursor = await db.execute(f"SELECT {column_name} FROM {table_name} WHERE user_id = ?", (member.id,))
+            row = await cursor.fetchone()
+
+            current_score = row[0] if row else 0
+
+            if current_score < amount:
+                return await ctx.send(
+                    f"❌ Cannot remove that many points.\n"
+                    f"**{member.display_name}** only has **{current_score:,}** points in the `{category}` category."
+                )
+
+            # Perform the subtraction
+            await db.execute(f"UPDATE {table_name} SET {column_name} = {column_name} - ? WHERE user_id = ?",
+                             (amount, member.id))
+            await db.commit()
+
+            # Get the new score for confirmation
+            cursor = await db.execute(f"SELECT {column_name} FROM {table_name} WHERE user_id = ?", (member.id,))
+            new_score = (await cursor.fetchone())[0]
+
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected database error occurred: {e}")
+        print(f"[ERROR] An exception occurred during the removestats command: {e}")
+        return
+
+    # --- 4. Confirmation Embed ---
+    unit = "seconds" if category == "voice" else "points"
+    embed = discord.Embed(
+        title="✅ Admin Action: Stats Removed",
+        description=f"Successfully removed points from **{member.display_name}**.",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+    embed.add_field(name="Target User", value=member.mention, inline=False)
+    embed.add_field(name="Category", value=f"`{category.capitalize()}`", inline=True)
+    embed.add_field(name="Amount Removed", value=f"`{amount:,} {unit}`", inline=True)
+    embed.add_field(name="Score Update", value=f"`{current_score:,}` ➡️ `{new_score:,}`", inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@removestats.error
+async def removestats_error(ctx, error):
+    """Handles errors for the removestats command."""
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You do not have the required `Administrator` permission to use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(
+            "❌ Incorrect usage. You need to specify a member, a category, and an amount.\n**Example:** `!removestats @User messages 100`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Couldn't find that member or the amount provided was not a valid whole number.")
+    else:
+        print(f"An unhandled error occurred in the removestats command: {error}")
+
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
     """
