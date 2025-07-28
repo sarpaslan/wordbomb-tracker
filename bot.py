@@ -1855,20 +1855,34 @@ class BlackjackView(discord.ui.View):
 # --- BLACKJACK COMMAND ---
 
 @bot.command(name="bj", aliases=["blackjack"])
-async def blackjack(ctx: commands.Context, amount: int):
+async def blackjack(ctx: commands.Context, amount: str):
     author = ctx.author
+
     if author.id in active_blackjack_games:
         return await ctx.send("You're already in a game!", ephemeral=True)
-    if amount <= 0:
-        return await ctx.send("You must bet a positive amount.", ephemeral=True)
 
     # Get the user's total effective balance
     current_balance = await get_effective_balance(author.id)
-    if current_balance < amount:
-        return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
+
+    # Check if user typed "all"
+    if amount.lower() == "all":
+        amount = current_balance
+        if amount == 0:
+            return await ctx.send("You don't have any coins to bet!", ephemeral=True)
+    else:
+        # Try to parse amount as integer
+        try:
+            amount = int(amount)
+        except ValueError:
+            return await ctx.send("Please enter a valid number or 'all' to bet everything.", ephemeral=True)
+
+        if amount <= 0:
+            return await ctx.send("You must bet a positive amount.", ephemeral=True)
+
+        if current_balance < amount:
+            return await ctx.send(f"You don't have enough coins! You have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
 
     # --- The rest of the game setup logic remains the same ---
-    # (create deck, deal cards, create embed, send message, check for natural blackjack)
     deck = create_deck()
     player_hand = [deck.pop(), deck.pop()]
     dealer_hand = [deck.pop(), deck.pop()]
@@ -1879,7 +1893,14 @@ async def blackjack(ctx: commands.Context, amount: int):
     embed.set_footer(text=f"Your Bet: {amount:,} coins")
     view = BlackjackView(author.id)
     game_message = await ctx.send(embed=embed, view=view)
-    active_blackjack_games[author.id] = { "deck": deck, "player_hand": player_hand, "dealer_hand": dealer_hand, "bet": amount, "message_id": game_message.id, "channel_id": ctx.channel.id }
+    active_blackjack_games[author.id] = {
+        "deck": deck,
+        "player_hand": player_hand,
+        "dealer_hand": dealer_hand,
+        "bet": amount,
+        "message_id": game_message.id,
+        "channel_id": ctx.channel.id
+    }
 
     # Check for immediate Blackjack
     if player_value == 21:
@@ -1889,19 +1910,6 @@ async def blackjack(ctx: commands.Context, amount: int):
         dummy_interaction = DummyInteraction(author, game_message)
         result = 'blackjack' if calculate_hand_value(dealer_hand) != 21 else 'push'
         await end_blackjack_game(dummy_interaction, result)
-
-# Baccarat
-def _calculate_baccarat_value(hand):
-    """Calculates the Baccarat value of a hand."""
-    value = 0
-    for _, rank in hand:
-        if rank in ['J', 'Q', 'K', '10']:
-            value += 0
-        elif rank == 'A':
-            value += 1
-        else:
-            value += int(rank)
-    return value % 10 # Baccarat value is the last digit of the sum
 
 # --- BACCARAT INTERACTIVE VIEW ---
 
