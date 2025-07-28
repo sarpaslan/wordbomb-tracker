@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import motor.motor_asyncio
 import requests
 import asyncio
-import ast
+import json
 
 # Load token
 load_dotenv()
@@ -2761,88 +2761,159 @@ async def roulette(ctx: commands.Context):
     view.message = game_message
     active_roulette_games[game_message.id] = game_state
 
+
 @bot.command(name="r")
-async def roulette_solo(ctx, bet_dict: str):
-    user = ctx.author
+async def solo_roulette(ctx: commands.Context, *, bets_json: str):
+    """
+    Places multiple roulette bets instantly using JSON format.
+
+    Keys must be in "double_quotes".
+    Valid Bet Keys:
+    - "red", "black", "odd", "even" (1:1 payout)
+    - "low" (1-18), "high" (19-36) (1:1 payout)
+    - "dozen1", "dozen2", "dozen3" (2:1 payout)
+    - "single_numbers": A nested object of {"number": amount} (35:1 payout)
+
+    Example:
+    !r {"red": 100, "dozen3": 50, "single_numbers": {"7": 25, "00": 10}}
+    """
+    author = ctx.author
+
+    # --- 1. Parse and Validate the Input ---
+    try:
+        bets_data = json.loads(bets_json)
+        if not isinstance(bets_data, dict):
+            raise ValueError("Input must be a JSON object.")
+    except (json.JSONDecodeError, ValueError) as e:
+        await ctx.send(
+            "❌ **Invalid Format!** Your bet must be a valid JSON object with keys in double quotes.\n"
+            "**Example:** `!r {\"black\": 500, \"single_numbers\": {\"7\": 100}}`")
+        return
+
+    VALID_BETS = {"red", "black", "odd", "even", "low", "high", "dozen1", "dozen2", "dozen3", "single_numbers"}
+    VALID_SINGLE_NUMBERS = {str(i) for i in range(37)} | {"00"}
+    total_bet = 0
+    validated_bets = {}
 
     try:
-        bets = ast.literal_eval(bet_dict)
-    except Exception as e:
-        return await ctx.send("❌ Invalid bet format. Make sure it's a valid Python dictionary.")
+        for key, value in bets_data.items():
+            if key not in VALID_BETS:
+                await ctx.send(f"❌ Invalid bet key: `{key}`. Please use one of the allowed keys.")
+                return
 
-    # Fetch current balance
-    balance = await get_effective_balance(user.id)
+            if key == "single_numbers":
+                if not isinstance(value, dict):
+                    await ctx.send("❌ The value for `single_numbers` must be a JSON object.")
+                    return
 
-    # Calculate total bet amount
-    total_bet = 0
-    if 'red/black' in bets:
-        total_bet += bets['red/black']
-    if 'dozens' in bets:
-        total_bet += bets['dozens']
-    if 'single_numbers' in bets:
-        total_bet += sum(bets['single_numbers'].values())
-
-    if total_bet <= 0:
-        return await ctx.send("❌ Total bet must be greater than 0.")
-    if total_bet > balance:
-        return await ctx.send(f"❌ You don't have enough balance. You have **{balance:,}** coins.")
-
-    # Pick a winning pocket
-    winning_key = random.choice(list(ROULETTE_POCKETS.keys()))
-    winning_color = ROULETTE_POCKETS[winning_key]['color']
-    winning_number = ROULETTE_POCKETS[winning_key]['number']
-
-    # Payouts
-    winnings = 0
-    results = []
-
-    # Red/Black
-    if 'red/black' in bets:
-        rb_bet = bets['red/black']
-        if winning_color in ['red', 'black']:
-            winnings += rb_bet * 2
-            results.append(f"🎯 Red/Black hit! ({winning_color}) +{rb_bet}")
-        else:
-            results.append(f"❌ Red/Black lost ({winning_color})")
-
-    # Dozens
-    if 'dozens' in bets and isinstance(winning_number, int):
-        dz_bet = bets['dozens']
-        if 1 <= winning_number <= 12:
-            winnings += dz_bet * 3
-            results.append(f"🎯 Dozen 1 hit! ({winning_number}) +{dz_bet*2}")
-        elif 13 <= winning_number <= 24:
-            winnings += dz_bet * 3
-            results.append(f"🎯 Dozen 2 hit! ({winning_number}) +{dz_bet*2}")
-        elif 25 <= winning_number <= 36:
-            winnings += dz_bet * 3
-            results.append(f"🎯 Dozen 3 hit! ({winning_number}) +{dz_bet*2}")
-        else:
-            results.append(f"❌ Dozen lost ({winning_number})")
-
-    # Single Numbers
-    if 'single_numbers' in bets:
-        for num, amt in bets['single_numbers'].items():
-            if num == winning_number:
-                winnings += amt * 36
-                results.append(f"🎯 Number {num} hit! +{amt*35}")
+                single_number_bets = {}
+                for num_str, amount in value.items():
+                    if num_str not in VALID_SINGLE_NUMBERS:
+                        await ctx.send(f"❌ Invalid single number bet: `{num_str}`.")
+                        return
+                    if not isinstance(amount, int) or amount <= 0:
+                        await ctx.send(f"❌ Bet amount for number `{num_str}` must be a positive integer.")
+                        return
+                    total_bet += amount
+                    single_number_bets[num_str] = amount
+                validated_bets[key] = single_number_bets
             else:
-                results.append(f"❌ Number {num} lost")
+                if not isinstance(value, int) or value <= 0:
+                    await ctx.send(f"❌ Bet amount for `{key}` must be a positive integer.")
+                    return
+                total_bet += value
+                validated_bets[key] = value
 
-    # Update balance
-    net = winnings - total_bet
-    await update_wordbomb_wallet(user.id, net)
+    except Exception as e:
+        await ctx.send(f"An error occurred during validation: {e}")
+        return
 
-    # Format result message
-    result_msg = (
-        f"🎰 Winning Pocket: **{winning_key}** ({winning_color})\n"
-        f"💰 Total Bet: {total_bet:,}\n"
-        f"📈 Winnings: {winnings:,}\n"
-        f"🧾 Net Change: {net:+,} coins\n\n"
-        + "\n".join(results[:15])  # limit to 15 lines
+    if not validated_bets:
+        return await ctx.send("You didn't place any valid bets!")
+
+    # --- 2. Check Player Balance ---
+    player_balance = await get_effective_balance(author.id)
+    if player_balance < total_bet:
+        return await ctx.send(
+            f"❌ You don't have enough coins for that bet!\n"
+            f"**Your Bet:** `{total_bet:,}`\n"
+            f"**Your Balance:** `{player_balance:,}`"
+        )
+
+    # --- 3. Run the Game ---
+    winning_key = random.choice(list(ROULETTE_POCKETS.keys()))
+    winning_number = int(winning_key) if str(winning_key).isdigit() else winning_key
+    winning_color = ROULETTE_POCKETS[winning_key]
+
+    total_payout = 0
+    results_breakdown = []
+
+    # --- 4. Calculate Payouts ---
+    for bet_name, amount in validated_bets.items():
+        won, rate = False, 0
+        if bet_name == "single_numbers":
+            for num_str, num_amount in amount.items():
+                if num_str == str(winning_key):
+                    payout = (num_amount * 35) + num_amount
+                    total_payout += payout
+                    results_breakdown.append(f"✅ Your bet on **{num_str}** won `{payout - num_amount:,}`!")
+                else:
+                    results_breakdown.append(f"❌ Your bet on **{num_str}** lost `{num_amount:,}`.")
+            continue  # Move to the next item in validated_bets
+
+        # --- Standard Bets ---
+        if winning_number not in [0, '00']:
+            if bet_name == "red" and winning_color == "red":
+                won, rate = True, 1
+            elif bet_name == "black" and winning_color == "black":
+                won, rate = True, 1
+            elif bet_name == "odd" and winning_number % 2 != 0:
+                won, rate = True, 1
+            elif bet_name == "even" and winning_number % 2 == 0:
+                won, rate = True, 1
+            elif bet_name == "low" and winning_number in range(1, 19):
+                won, rate = True, 1
+            elif bet_name == "high" and winning_number in range(19, 37):
+                won, rate = True, 1
+            elif bet_name == "dozen1" and winning_number in DOZEN_1:
+                won, rate = True, 2
+            elif bet_name == "dozen2" and winning_number in DOZEN_2:
+                won, rate = True, 2
+            elif bet_name == "dozen3" and winning_number in DOZEN_3:
+                won, rate = True, 2
+
+        if won:
+            payout = (amount * rate) + amount
+            total_payout += payout
+            results_breakdown.append(f"✅ Your **{bet_name}** bet won `{payout - amount:,}`!")
+        else:
+            results_breakdown.append(f"❌ Your **{bet_name}** bet lost `{amount:,}`.")
+
+    # --- 5. Finalize and Send Results ---
+    net_result = total_payout - total_bet
+    await modify_coin_adjustment(author.id, net_result)
+    new_balance = await get_effective_balance(author.id)
+
+    color_emoji = "🔴" if winning_color == "red" else "⚫" if winning_color == "black" else "🟢"
+    embed_color = discord.Color.green() if net_result > 0 else discord.Color.red() if net_result < 0 else discord.Color.light_grey()
+
+    embed = discord.Embed(
+        title="⚡ Solo Roulette Results ⚡",
+        description=f"The ball landed on **{color_emoji} {winning_key} {color_emoji}**",
+        color=embed_color
     )
+    embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
+    embed.add_field(name="Bet Results", value="\n".join(results_breakdown), inline=False)
+    embed.add_field(
+        name="Summary",
+        value=f"**Total Bet:** `{total_bet:,}`\n"
+              f"**Total Payout:** `{total_payout:,}`\n"
+              f"**Net Result:** `{net_result:+,}`",
+        inline=True
+    )
+    embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>", inline=True)
 
-    await ctx.send(result_msg)
+    await ctx.send(embed=embed)
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
