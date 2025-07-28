@@ -1853,7 +1853,6 @@ class BlackjackView(discord.ui.View):
             await end_blackjack_game(interaction, 'push')
 
 # --- BLACKJACK COMMAND ---
-
 @bot.command(name="bj", aliases=["blackjack"])
 async def blackjack(ctx: commands.Context, amount: str):
     author = ctx.author
@@ -1911,8 +1910,21 @@ async def blackjack(ctx: commands.Context, amount: str):
         result = 'blackjack' if calculate_hand_value(dealer_hand) != 21 else 'push'
         await end_blackjack_game(dummy_interaction, result)
 
-# --- BACCARAT INTERACTIVE VIEW ---
+# Baccarat
+# Baccarat
+def _calculate_baccarat_value(hand):
+    """Calculates the Baccarat value of a hand."""
+    value = 0
+    for _, rank in hand:
+        if rank in ['J', 'Q', 'K', '10']:
+            value += 0
+        elif rank == 'A':
+            value += 1
+        else:
+            value += int(rank)
+    return value % 10 # Baccarat value is the last digit of the sum
 
+# --- BACCARAT INTERACTIVE VIEW ---
 class BaccaratView(discord.ui.View):
     def __init__(self, author_id: int):
         super().__init__(timeout=120.0) # Game times out after 2 minutes
