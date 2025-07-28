@@ -923,29 +923,56 @@ async def show_help(ctx):
 
     await ctx.send(embed=embed)
 
+
 @bot.command(name="give", aliases=["pay", "transfer"])
-async def give(ctx: commands.Context, *, args: str):
+async def give(ctx: commands.Context, *args):
     """
-    Allows a player to give a specified amount of their coins to another player
-    (arguments can be in any order).
+    Allows a player to give coins to another player.
+    The order of the user and amount does not matter.
+    Example: !give @User 500  OR  !give 500 @User
     """
-    import re
-
     giver = ctx.author
-    mentions = ctx.message.mentions
-    numbers = re.findall(r'\b\d+\b', args)
 
-    # --- Validation ---
-    if not mentions:
-        await ctx.send("❌ You must mention a user to give coins to.")
+    # --- 1. NEW: Argument Parsing Logic ---
+    receiver = None
+    amount = None
+
+    # We need a converter to manually find the Member in the arguments
+    member_converter = commands.MemberConverter()
+
+    for arg in args:
+        # First, try to convert the argument to an integer
+        try:
+            # If successful and we haven't found an amount yet, this is it
+            if amount is None:
+                amount = int(arg)
+            continue  # Move to the next argument
+        except ValueError:
+            # This is not a number, so it could be the user
+            pass
+
+        # If it wasn't an integer, try to convert it to a member
+        try:
+            # If successful and we haven't found a receiver yet, this is it
+            if receiver is None:
+                receiver = await member_converter.convert(ctx, arg)
+            continue
+        except commands.MemberNotFound:
+            # This argument is neither a valid amount nor a valid member
+            pass
+
+    # --- 2. NEW: Validation of Parsed Arguments ---
+    # Check if we successfully found both a user and an amount
+    if receiver is None or amount is None:
+        await ctx.send(
+            "❌ Incorrect usage. You must specify a valid user and a whole number amount.\n"
+            "**Examples:**\n`!give @User 500`\n`!give 500 @User`"
+        )
         return
-    if not numbers:
-        await ctx.send("❌ You must specify an amount to give.")
-        return
 
-    receiver = mentions[0]
-    amount = int(numbers[0])
+    # --- From here, the original logic of your command can proceed as normal ---
 
+    # --- 3. Validation and Edge Case Checks ---
     if giver.id == receiver.id:
         await ctx.send("❌ You cannot give coins to yourself!")
         return
@@ -956,7 +983,7 @@ async def give(ctx: commands.Context, *, args: str):
         await ctx.send("❌ You must give a positive amount of coins.")
         return
 
-    # --- Balance Check ---
+    # --- 4. Balance Check ---
     giver_balance = await get_effective_balance(giver.id)
     if giver_balance < amount:
         await ctx.send(
@@ -964,23 +991,24 @@ async def give(ctx: commands.Context, *, args: str):
         )
         return
 
-    # --- Perform Transaction ---
+    # --- 5. The Transaction ---
     try:
         giver_success = await modify_coin_adjustment(giver.id, -amount)
         receiver_success = await modify_coin_adjustment(receiver.id, amount)
 
         if not giver_success or not receiver_success:
             if giver_success and not receiver_success:
-                await modify_coin_adjustment(giver.id, amount)  # Refund
-            await ctx.send("❌ A database error occurred. The transaction has been cancelled.")
+                await modify_coin_adjustment(giver.id, amount)  # Refund the giver
+            await ctx.send("❌ A database error occurred. The transaction has been cancelled. Please try again.")
             print(f"[ERROR] Failed transaction: Giver success: {giver_success}, Receiver success: {receiver_success}")
             return
+
     except Exception as e:
-        await ctx.send("❌ An unexpected error occurred during the transaction.")
-        print(f"[ERROR] Exception in give command: {e}")
+        await ctx.send("❌ An unexpected error occurred while processing the transaction.")
+        print(f"[ERROR] An exception occurred during the give command: {e}")
         return
 
-    # --- Confirmation Embed ---
+    # --- 6. Fetch New Balances and Send Confirmation ---
     new_giver_balance = await get_effective_balance(giver.id)
     new_receiver_balance = await get_effective_balance(receiver.id)
 
@@ -989,11 +1017,12 @@ async def give(ctx: commands.Context, *, args: str):
         description=f"{giver.mention} has successfully given **{amount:,}** <:wbcoin:1398780929664745652> to {receiver.mention}!",
         color=discord.Color.green()
     )
-    embed.add_field(name=f"{giver.display_name}'s New Balance", value=f"{new_giver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
-    embed.add_field(name=f"{receiver.display_name}'s New Balance", value=f"{new_receiver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
+    embed.add_field(name=f"{giver.display_name}'s New Balance",
+                    value=f"{new_giver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
+    embed.add_field(name=f"{receiver.display_name}'s New Balance",
+                    value=f"{new_receiver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
     embed.set_footer(text=f"Requested by {giver.display_name}")
     await ctx.send(embed=embed)
-
 
 # Trivia Game
 class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
