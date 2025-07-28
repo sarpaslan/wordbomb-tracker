@@ -924,14 +924,28 @@ async def show_help(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="give", aliases=["pay", "transfer"])
-async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
+async def give(ctx: commands.Context, *, args: str):
     """
     Allows a player to give a specified amount of their coins to another player
-    and shows the resulting balances.
+    (arguments can be in any order).
     """
-    giver = ctx.author
+    import re
 
-    # --- 1. Validation and Edge Case Checks ---
+    giver = ctx.author
+    mentions = ctx.message.mentions
+    numbers = re.findall(r'\b\d+\b', args)
+
+    # --- Validation ---
+    if not mentions:
+        await ctx.send("❌ You must mention a user to give coins to.")
+        return
+    if not numbers:
+        await ctx.send("❌ You must specify an amount to give.")
+        return
+
+    receiver = mentions[0]
+    amount = int(numbers[0])
+
     if giver.id == receiver.id:
         await ctx.send("❌ You cannot give coins to yourself!")
         return
@@ -942,7 +956,7 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
         await ctx.send("❌ You must give a positive amount of coins.")
         return
 
-    # --- 2. Balance Check ---
+    # --- Balance Check ---
     giver_balance = await get_effective_balance(giver.id)
     if giver_balance < amount:
         await ctx.send(
@@ -950,45 +964,36 @@ async def give(ctx: commands.Context, receiver: discord.Member, amount: int):
         )
         return
 
-    # --- 3. The Transaction ---
+    # --- Perform Transaction ---
     try:
         giver_success = await modify_coin_adjustment(giver.id, -amount)
         receiver_success = await modify_coin_adjustment(receiver.id, amount)
 
         if not giver_success or not receiver_success:
             if giver_success and not receiver_success:
-                await modify_coin_adjustment(giver.id, amount) # Refund the giver
-            await ctx.send("❌ A database error occurred. The transaction has been cancelled. Please try again.")
+                await modify_coin_adjustment(giver.id, amount)  # Refund
+            await ctx.send("❌ A database error occurred. The transaction has been cancelled.")
             print(f"[ERROR] Failed transaction: Giver success: {giver_success}, Receiver success: {receiver_success}")
             return
-
     except Exception as e:
-        await ctx.send("❌ An unexpected error occurred while processing the transaction.")
-        print(f"[ERROR] An exception occurred during the give command: {e}")
+        await ctx.send("❌ An unexpected error occurred during the transaction.")
+        print(f"[ERROR] Exception in give command: {e}")
         return
 
-    # --- 4. Fetch New Balances and Send Confirmation ---
-
-    # --- THIS IS THE NEW LOGIC ---
-    # Fetch the balances of both users *after* the transaction is complete.
+    # --- Confirmation Embed ---
     new_giver_balance = await get_effective_balance(giver.id)
     new_receiver_balance = await get_effective_balance(receiver.id)
-    # --- END OF NEW LOGIC ---
 
     embed = discord.Embed(
         title="✅ Transaction Successful!",
         description=f"{giver.mention} has successfully given **{amount:,}** <:wbcoin:1398780929664745652> to {receiver.mention}!",
         color=discord.Color.green()
     )
-
-    # --- AND THIS IS THE NEW PART OF THE EMBED ---
-    # Add fields to show the updated balances, formatted with commas.
     embed.add_field(name=f"{giver.display_name}'s New Balance", value=f"{new_giver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
     embed.add_field(name=f"{receiver.display_name}'s New Balance", value=f"{new_receiver_balance:,} <:wbcoin:1398780929664745652>", inline=True)
-    # --- END OF EMBED CHANGE ---
-
     embed.set_footer(text=f"Requested by {giver.display_name}")
     await ctx.send(embed=embed)
+
 
 # Trivia Game
 class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
