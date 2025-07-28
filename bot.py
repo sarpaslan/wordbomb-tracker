@@ -1711,16 +1711,33 @@ async def end_blackjack_game(interaction: discord.Interaction, result: str):
     await interaction.message.edit(embed=final_embed, view=None)
 
 
-# --- UPDATED BLACKJACK VIEW ---
+# --- REWRITTEN BLACKJACK VIEW ---
 
 class BlackjackView(discord.ui.View):
     def __init__(self, author_id: int, can_double_down: bool):
-        super().__init__(timeout=180.0)  # 3 minute timeout per game
+        super().__init__(timeout=180.0)
         self.author_id = author_id
 
-        # --- THE FIX ---
-        # The Double Down button is conditionally disabled from the start.
-        self.double_down_button.disabled = not can_double_down
+        # --- THE FIX: Manually create all buttons to control their state ---
+
+        # 1. Create the Hit Button
+        self.hit_button = discord.ui.Button(label="Hit", style=discord.ButtonStyle.green)
+        self.hit_button.callback = self.hit_callback  # Link to its logic
+        self.add_item(self.hit_button)
+
+        # 2. Create the Stand Button
+        self.stand_button = discord.ui.Button(label="Stand", style=discord.ButtonStyle.danger)
+        self.stand_button.callback = self.stand_callback
+        self.add_item(self.stand_button)
+
+        # 3. Create the Double Down Button with conditional disabling
+        self.double_down_button = discord.ui.Button(
+            label="Double Down",
+            style=discord.ButtonStyle.primary,
+            disabled=not can_double_down  # This now works reliably
+        )
+        self.double_down_button.callback = self.double_down_callback
+        self.add_item(self.double_down_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -1729,16 +1746,15 @@ class BlackjackView(discord.ui.View):
         return True
 
     async def on_timeout(self):
-        # Timeout logic remains the same
-        pass  # Placeholder, your existing timeout logic is fine
+        # Your timeout logic is fine and doesn't need changes
+        pass
 
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
-    async def hit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    # --- BUTTON CALLBACKS (No longer decorated) ---
+
+    async def hit_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if self.author_id not in active_blackjack_games: return
 
-        # --- THE FIX ---
-        # Hitting disables the ability to Double Down for the rest of the hand.
         self.double_down_button.disabled = True
 
         game = active_blackjack_games[self.author_id]
@@ -1759,59 +1775,49 @@ class BlackjackView(discord.ui.View):
             else:
                 await interaction.edit_original_response(embed=embed, view=self)
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, custom_id="bj_stand")
-    async def stand_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def stand_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if self.author_id not in active_blackjack_games: return
 
-        # --- THE FIX ---
-        # Standing also disables Double Down and Hit.
         self.hit_button.disabled = True
         self.double_down_button.disabled = True
-        button.disabled = True
+        self.stand_button.disabled = True
 
         await interaction.edit_original_response(view=self)
         await self.dealer_turn(interaction)
 
-    # --- NEW DOUBLE DOWN BUTTON ---
-    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.primary, custom_id="bj_double")
-    async def double_down_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def double_down_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if self.author_id not in active_blackjack_games: return
 
         game = active_blackjack_games[self.author_id]
         bet = game['bet']
 
-        # Double check balance again in case it changed
         current_balance = await get_effective_balance(self.author_id)
         if current_balance < (bet * 2):
+            self.double_down_button.disabled = True
+            await interaction.edit_original_response(view=self)
             return await interaction.followup.send("You no longer have enough coins to double down!", ephemeral=True)
 
-        # Disable all buttons as the player's turn is over
         self.hit_button.disabled = True
         self.stand_button.disabled = True
-        button.disabled = True
+        self.double_down_button.disabled = True
 
-        # Double the bet in the game state
         game['bet'] *= 2
-
-        # Give the player exactly one more card
         game['player_hand'].append(game['deck'].pop())
         player_value = calculate_hand_value(game['player_hand'])
 
-        # Update embed to show new bet and hand
         embed = interaction.message.embeds[0]
         embed.set_footer(text=f"Your Bet (Doubled): {game['bet']:,} coins")
         embed.set_field_at(1, name=f"Your Hand ({player_value})", value=hand_to_string(game['player_hand']),
                            inline=False)
         await interaction.edit_original_response(embed=embed, view=self)
 
-        await asyncio.sleep(1)  # Dramatic pause
+        await asyncio.sleep(1)
 
         if player_value > 21:
             await end_blackjack_game(interaction, 'bust')
         else:
-            # Turn is over, proceed to dealer
             await self.dealer_turn(interaction)
 
     async def dealer_turn(self, interaction: discord.Interaction):
@@ -1822,7 +1828,7 @@ class BlackjackView(discord.ui.View):
         dealer_value = calculate_hand_value(game['dealer_hand'])
         embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
                            inline=False)
-        await interaction.edit_original_response(embed=embed)
+        await interaction.edit_original_response(embed=embed, view=self)
         await asyncio.sleep(1)
 
         while calculate_hand_value(game['dealer_hand']) < 17:
@@ -1830,7 +1836,7 @@ class BlackjackView(discord.ui.View):
             dealer_value = calculate_hand_value(game['dealer_hand'])
             embed.set_field_at(0, name=f"Dealer's Hand ({dealer_value})", value=hand_to_string(game['dealer_hand']),
                                inline=False)
-            await interaction.edit_original_response(embed=embed)
+            await interaction.edit_original_response(embed=embed, view=self)
             await asyncio.sleep(1)
 
         player_value = calculate_hand_value(game['player_hand'])
@@ -1873,8 +1879,6 @@ async def blackjack(ctx: commands.Context, amount: str):
     dealer_hand = [deck.pop(), deck.pop()]
     player_value = calculate_hand_value(player_hand)
 
-    # --- THE FIX ---
-    # Check if the player can afford to double down BEFORE creating the view.
     can_double_down = current_balance >= (bet_amount * 2)
 
     embed = discord.Embed(title=f"{author.display_name}'s Blackjack Game", color=0x2E3136)
@@ -1882,7 +1886,6 @@ async def blackjack(ctx: commands.Context, amount: str):
     embed.add_field(name=f"Your Hand ({player_value})", value=hand_to_string(player_hand), inline=False)
     embed.set_footer(text=f"Your Bet: {bet_amount:,} coins")
 
-    # Pass the boolean to the view
     view = BlackjackView(author.id, can_double_down)
 
     game_message = await ctx.send(embed=embed, view=view)
@@ -1895,13 +1898,17 @@ async def blackjack(ctx: commands.Context, amount: str):
     if player_value == 21:
         view.stop()
 
+        # Create a dummy interaction object to pass to end_game
         class DummyInteraction:
-            def __init__(self, user, message): self.user, self.message = user, message
+            def __init__(self, user, message):
+                self.user = user
+                self.message = message
 
         dummy_interaction = DummyInteraction(author, game_message)
         result = 'blackjack' if calculate_hand_value(dealer_hand) != 21 else 'push'
+        # The end_game function already handles removing the game state
         await end_blackjack_game(dummy_interaction, result)
-        
+
 # Baccarat
 def _calculate_baccarat_value(hand):
     """Calculates the Baccarat value of a hand."""
