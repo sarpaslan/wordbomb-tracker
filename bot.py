@@ -2062,34 +2062,37 @@ async def _start_new_hand(logical_name: str):
     table = active_blackjack_tables.get(logical_name)
     if not table: return
 
-    # Correctly get channel_id from the table data for sending messages
     channel_id = table.get("channel_id")
+    channel = bot.get_channel(channel_id)
 
     # Reshuffle logic
     shoe_size = len(create_shoe(2))
-    if len(table.get("shoe", [])) < shoe_size * 0.25:  # Using a direct value like 0.25 instead of a constant
+    if len(table.get("shoe", [])) < shoe_size * 0.25:
         table["shoe"] = create_shoe(2)
-        channel = bot.get_channel(channel_id)
         if channel:
             await channel.send("`DEALER: Shoe is low. Reshuffling...`", delete_after=10)
         await asyncio.sleep(2)
 
+    # --- THE DEFINITIVE FIX IS HERE ---
+    # First, reset the dealer's hand for the new round.
     table["dealer_hand"] = []
 
-    # Kick players who didn't bet
+    # Now, process players: kick those who didn't bet, and RESET the hands of those who did.
     for p_id in list(table["players"].keys()):
-        if table["players"][p_id]["bet"] == 0:
-            # This now correctly passes logical_name
-            await _handle_player_leave(table["players"][p_id]["member"], logical_name)
+        player_data = table["players"][p_id]
+        if player_data["bet"] == 0:
+            await _handle_player_leave(player_data["member"], logical_name)
+        else:
+            # This resets the player for the new hand.
+            player_data["hand"] = []
+            player_data["status"] = "playing"
 
-    # --- CRITICAL CHECK ---
-    # After the loop, check if the table still exists. If _handle_player_leave
-    # removed the last player, it would have deleted the table entry.
-    if logical_name not in active_blackjack_tables:
-        print(f"[BJ INFO] Table '{logical_name}' was closed because all players were removed. Aborting hand start.")
+    # If all players were kicked, abort the hand.
+    if logical_name not in active_blackjack_tables or not table.get("players"):
+        print(f"[BJ INFO] Table '{logical_name}' is empty. Aborting hand start.")
         return
 
-    # Deal Cards
+    # Deal Cards to the remaining players
     for _ in range(2):
         for p_id in table["players"]:
             table["players"][p_id]["hand"].append(table["shoe"].pop())
@@ -2097,24 +2100,21 @@ async def _start_new_hand(logical_name: str):
 
     table["status"] = "player_turns"
 
-    # Update player statuses and check for blackjacks
+    # After dealing, check if anyone got a natural Blackjack.
     dealer_has_bj = calculate_hand_value(table["dealer_hand"]) == 21
     for p_data in table["players"].values():
-        p_data["status"] = "playing"  # Set status to playing first
         if calculate_hand_value(p_data["hand"]) == 21:
-            p_data["status"] = "blackjack"  # Upgrade status if they have blackjack
+            p_data["status"] = "blackjack"
 
-    # Update the embed with the dealt hands
+    # Update the embed to show the newly dealt hands
     await _update_game_embed(logical_name)
     await asyncio.sleep(1.5)
 
-    if dealer_has_bj:
+    # Resolve the hand immediately if the dealer has BJ or if all players do.
+    if dealer_has_bj or all(p.get("status") == "blackjack" for p in table["players"].values()):
         await _resolve_hand(logical_name)
     else:
-        if all(p.get("status") == "blackjack" for p in table["players"].values()):
-            await _resolve_hand(logical_name)
-        else:
-            await _next_player_turn(logical_name)
+        await _next_player_turn(logical_name)
 
 # --- BLOCK 4: MODALS AND VIEWS ---
 # (This block comes AFTER the core logic functions it uses)
