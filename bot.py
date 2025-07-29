@@ -1853,11 +1853,17 @@ async def _dealer_turn(channel_id: int):
     await _resolve_hand(channel_id)
 
 
-async def _next_player_turn(channel_id: int):
-    """Finds the next active player and gives them control."""
-    table = active_blackjack_tables.get(channel_id)
+async def _next_player_turn(logical_name: str):
+    """Finds the next active player, gives them control, and starts the inactivity timer."""
+    table = active_blackjack_tables.get(logical_name)
     if not table: return
 
+    # Cancel any previous timer before starting a new one
+    old_task = table.get("turn_timeout_task")
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    # Find the next player
     next_player_id = None
     for p_id, p_data in table["players"].items():
         if p_data["status"] == "playing":
@@ -1867,32 +1873,16 @@ async def _next_player_turn(channel_id: int):
     table["current_player_id"] = next_player_id
 
     if next_player_id:
-        await _update_game_embed(channel_id)
+        # A player's turn is starting, so create and store the kick timer task.
+        task = bot.loop.create_task(_kick_inactive_player(logical_name, next_player_id))
+        table["turn_timeout_task"] = task
+        print(f"[BJ DEBUG] Started inactivity timer for player {next_player_id} on table '{logical_name}'.")
+        await _update_game_embed(logical_name)
     else:
+        # No more players, it's the dealer's turn. Clear the timer task.
+        table["turn_timeout_task"] = None
         table["status"] = "dealer_turn"
-        await _dealer_turn(channel_id)
-
-
-async def _initialize_table(logical_name: str):
-    """Posts the initial message in a newly created channel."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table:
-        print(f"[BJ ERROR] Attempted to initialize non-existent logical table: {logical_name}")
-        return
-
-    channel = bot.get_channel(table["channel_id"])
-    if not channel:
-        print(f"[BJ ERROR] Could not find newly created channel for {logical_name}")
-        return
-
-    embed = discord.Embed(
-        title=f"🎲 {logical_name} 🎲",
-        description="The table is open. Place your bets to be included in the next hand!",
-        color=discord.Color.dark_green()
-    )
-    # Pass the logical_name to the view
-    new_message = await channel.send(embed=embed, view=BettingView(logical_name))
-    table["game_message"] = new_message
+        await _dealer_turn(logical_name)
 
 
 async def _handle_player_leave(member: discord.Member, logical_name: str):
@@ -2110,37 +2100,38 @@ class BettingView(ui.View):
 
 
 class PlayerActionView(ui.View):
-    def __init__(self, logical_name: str, can_double: bool): # CHANGED
-        super().__init__(timeout=120.0)
-        self.logical_name = logical_name # CHANGED
+    def __init__(self, logical_name: str, can_double: bool):
+        # The View now lives forever until the bot restarts.
+        super().__init__(timeout=None)
+        self.logical_name = logical_name
+        # The logic to disable the double down button remains.
         self.double_down.disabled = not can_double
 
+    # The on_timeout method has been COMPLETELY REMOVED.
+    # The inactivity logic will be handled by a separate background task.
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        table = active_blackjack_tables.get(self.logical_name) # CHANGED
+        # This check is still useful to give instant feedback.
+        table = active_blackjack_tables.get(self.logical_name)
         if not table or interaction.user.id != table.get("current_player_id"):
             await interaction.response.send_message("It is not your turn.", ephemeral=True)
             return False
         return True
 
-    async def on_timeout(self):
-        table = active_blackjack_tables.get(self.logical_name) # CHANGED
-        if table and table["status"] == "player_turns":
-            p_id = table["current_player_id"]
-            if p_id in table["players"]:
-                table["players"][p_id]["status"] = "stood"
-                channel_id = table.get("channel_id")
-                if channel_id:
-                    channel = bot.get_channel(channel_id)
-                    if channel:
-                        member_name = table['players'][p_id]['member'].display_name
-                        await channel.send(f"{member_name} timed out and stood.", delete_after=10)
-
-                # This part was already correct
-                await _next_player_turn(self.logical_name)
+    async def _cancel_turn_timer(self):
+        """A helper to safely cancel the inactivity timer."""
+        table = active_blackjack_tables.get(self.logical_name)
+        if table:
+            task = table.get("turn_timeout_task")
+            if task and not task.done():
+                task.cancel()
+                print(f"[BJ DEBUG] Turn timer for table '{self.logical_name}' cancelled.")
 
     @ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
     async def hit(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
+        await self._cancel_turn_timer() # Cancel the kick timer
+
         table = active_blackjack_tables.get(self.logical_name)
         p_data = table["players"][interaction.user.id]
         p_data["hand"].append(table["shoe"].pop())
@@ -2152,11 +2143,15 @@ class PlayerActionView(ui.View):
             await asyncio.sleep(1)
             await _next_player_turn(self.logical_name)
         else:
+            # We must re-send the view to show the disabled double-down button
             await _update_game_embed(self.logical_name)
+
 
     @ui.button(label="Stand", style=discord.ButtonStyle.danger, custom_id="bj_stand")
     async def stand(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
+        await self._cancel_turn_timer() # Cancel the kick timer
+
         table = active_blackjack_tables.get(self.logical_name)
         table["players"][interaction.user.id]["status"] = "stood"
         await _next_player_turn(self.logical_name)
@@ -2164,6 +2159,8 @@ class PlayerActionView(ui.View):
     @ui.button(label="Double Down", style=discord.ButtonStyle.primary, custom_id="bj_double")
     async def double_down(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
+        await self._cancel_turn_timer() # Cancel the kick timer
+
         table = active_blackjack_tables.get(self.logical_name)
         p_data = table["players"][interaction.user.id]
 
@@ -2176,6 +2173,25 @@ class PlayerActionView(ui.View):
         await asyncio.sleep(1.5)
         await _next_player_turn(self.logical_name)
 
+async def _kick_inactive_player(logical_name: str, player_id: int):
+    """Waits 2 minutes and kicks a player if they are still the current player."""
+    await asyncio.sleep(120) # Wait for 2 minutes
+
+    table = active_blackjack_tables.get(logical_name)
+    # CRITICAL CHECK: Only proceed if the game is in the exact same state.
+    # This prevents kicking a player who timed out on a previous hand.
+    if table and table.get("status") == "player_turns" and table.get("current_player_id") == player_id:
+        print(f"[BJ INFO] Kicking inactive player {player_id} from table '{logical_name}'.")
+        player_data = table["players"].get(player_id)
+        if player_data and player_data.get("member"):
+            channel_id = table.get("channel_id")
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await channel.send(f"**{player_data['member'].display_name}** was removed from the table due to inactivity.", delete_after=15)
+            # Use the existing leave handler to properly kick them
+            await _handle_player_leave(player_data["member"], logical_name)
+    else:
+        print(f"[BJ DEBUG] Inactivity timer for {player_id} on table '{logical_name}' expired harmlessly.")
 
 class TableSelectionView(ui.View):
     def __init__(self):
@@ -2819,36 +2835,36 @@ async def removestats_error(ctx, error):
         print(f"An unhandled error occurred in the removestats command: {error}")
 
 
-# @bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
-# async def delete_channel(ctx: commands.Context, channel_id: int):
-#     """
-#     Deletes the channel with the given ID.
-#     """
-#     # Try to fetch the channel
-#     ALLOWED_USER_ID = 849827666064048178
-# 
-#     if ctx.author.id != ALLOWED_USER_ID:
-#         return await ctx.send("🚫 You are not authorized to use this powerful command.")
-#
-#     channel = bot.get_channel(channel_id)
-#
-#     if not channel:
-#         await ctx.send("❌ Could not find a channel with that ID.")
-#         return
-#
-#     # Double-check it's in the same guild
-#     if channel.guild != ctx.guild:
-#         await ctx.send("❌ That channel doesn't belong to this server.")
-#         return
-#
-#     try:
-#         await channel.delete(reason=f"Deleted by {ctx.author} via command.")
-#         await ctx.send(f"✅ Channel **#{channel.name}** has been deleted.")
-#     except discord.Forbidden:
-#         await ctx.send("❌ I don't have permission to delete that channel.")
-#     except Exception as e:
-#         await ctx.send("❌ An unexpected error occurred.")
-#         print(f"[ERROR] Failed to delete channel {channel_id}: {e}")
+@bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
+async def delete_channel(ctx: commands.Context, channel_id: int):
+    """
+    Deletes the channel with the given ID.
+    """
+    # Try to fetch the channel
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this powerful command.")
+
+    channel = bot.get_channel(channel_id)
+
+    if not channel:
+        await ctx.send("❌ Could not find a channel with that ID.")
+        return
+
+    # Double-check it's in the same guild
+    if channel.guild != ctx.guild:
+        await ctx.send("❌ That channel doesn't belong to this server.")
+        return
+
+    try:
+        await channel.delete(reason=f"Deleted by {ctx.author} via command.")
+        await ctx.send(f"✅ Channel **#{channel.name}** has been deleted.")
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to delete that channel.")
+    except Exception as e:
+        await ctx.send("❌ An unexpected error occurred.")
+        print(f"[ERROR] Failed to delete channel {channel_id}: {e}")
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
