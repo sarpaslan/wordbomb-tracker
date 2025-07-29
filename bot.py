@@ -1855,7 +1855,7 @@ async def _resolve_hand(channel_id: int):
         p_data["bet"] = 0
 
     await _update_game_embed(channel_id, results_log=results_log)
-    await asyncio.sleep(8)
+    await asyncio.sleep(4)
 
     for member in table["waiting_to_join"]:
         if member.id not in table["players"]:
@@ -1875,13 +1875,13 @@ async def _dealer_turn(channel_id: int):
     if not table: return
 
     await _update_game_embed(channel_id)
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(0.3)
 
     while calculate_hand_value(table["dealer_hand"]) < 17 or (
             calculate_hand_value(table["dealer_hand"]) == 17 and any(c[1] == 'A' for c in table["dealer_hand"])):
         table["dealer_hand"].append(table["shoe"].pop())
         await _update_game_embed(channel_id)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.3)
 
     await _resolve_hand(channel_id)
 
@@ -2022,7 +2022,7 @@ async def _start_new_hand(channel_id: int):
             p_data["status"] = "blackjack"
 
     await _update_game_embed(channel_id)
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(0.5)
 
     if dealer_has_bj:
         await _resolve_hand(channel_id)
@@ -2203,7 +2203,7 @@ class PlayerActionView(ui.View):
         p_data["status"] = "busted" if calculate_hand_value(p_data["hand"]) > 21 else "stood"
 
         await _update_game_embed(self.logical_name)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
         await _next_player_turn(self.logical_name)
 
 async def _kick_inactive_player(logical_name: str, player_id: int):
