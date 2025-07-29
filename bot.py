@@ -2128,10 +2128,15 @@ class PlayerActionView(ui.View):
             p_id = table["current_player_id"]
             if p_id in table["players"]:
                 table["players"][p_id]["status"] = "stood"
-                channel = bot.get_channel(self.channel_id)
-                if channel: await channel.send(f"{table['players'][p_id]['member'].display_name} timed out and stood.",
-                                               delete_after=10)
-                await _next_player_turn(self.logical_name) # CHANGED
+                channel_id = table.get("channel_id")
+                if channel_id:
+                    channel = bot.get_channel(channel_id)
+                    if channel:
+                        member_name = table['players'][p_id]['member'].display_name
+                        await channel.send(f"{member_name} timed out and stood.", delete_after=10)
+
+                # This part was already correct
+                await _next_player_turn(self.logical_name)
 
     @ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
     async def hit(self, interaction: discord.Interaction, button: ui.Button):
