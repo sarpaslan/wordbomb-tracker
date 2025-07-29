@@ -2046,18 +2046,12 @@ async def _handle_player_join(member: discord.Member, logical_name: str):
     if table["status"] in ["player_turns", "dealer_turn", "hand_over"]:
         if not any(m.id == member.id for m in table["waiting_to_join"]):
             table["waiting_to_join"].append(member)
-        try:
-            await member.send(f"You have joined **{logical_name}**. A hand is in progress. You'll be dealt in next!")
-        except discord.Forbidden: pass
     else:
         if member.id not in table["players"]:
             table["players"][member.id] = player_data_entry
             # When the first player joins and betting starts, start the monitor.
             if len(table["players"]) == 1:
                 _start_betting_monitor(logical_name)
-        try:
-            await member.send(f"You have taken a seat at **{logical_name}**.")
-        except discord.Forbidden: pass
 
     await _update_game_embed(logical_name)
 
