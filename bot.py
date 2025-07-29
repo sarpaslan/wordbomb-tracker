@@ -1711,6 +1711,39 @@ class BettingView(ui.View): pass
 
 class PlayerActionView(ui.View): pass
 
+async def _initialize_table(logical_name: str):
+    """
+    Posts the initial game message and view into a newly created channel.
+    This function assumes the table state already exists in active_blackjack_tables.
+    """
+    table = active_blackjack_tables.get(logical_name)
+    if not table:
+        print(f"[BJ CRITICAL ERROR] _initialize_table was called for a non-existent logical table: '{logical_name}'")
+        return
+
+    # Get the channel object from the ID we stored when creating it
+    channel_id = table.get("channel_id")
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        print(f"[BJ CRITICAL ERROR] Could not find channel with ID {channel_id} for table '{logical_name}'")
+        return
+
+    # Create the initial welcome embed
+    embed = discord.Embed(
+        title=f"🎲 {logical_name} 🎲",
+        description="The table is open! Use the buttons below to place a bet or start the hand.",
+        color=discord.Color.dark_green()
+    )
+
+    # Post the new message and attach the live betting view
+    # It's crucial to pass the logical_name to the view
+    new_message = await channel.send(embed=embed, view=BettingView(logical_name))
+
+    # IMPORTANT: Store the reference to this new, live message back into the table state.
+    # This is how all future updates will find and edit the message.
+    table["game_message"] = new_message
+
+    print(f"[BJ INFO] Initialized new game message in channel '{channel.name}' for table '{logical_name}'.")
 
 # This function is now defined first as it's called by almost every other function.
 async def _update_game_embed(logical_name: str, results_log: list = None):
