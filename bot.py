@@ -1706,10 +1706,27 @@ def hand_to_string(hand, is_dealer=False, hide_card=False):
     return " ".join([f"`{SUITS[card[0]]} {card[1]}`" for card in hand])
 
 
-class BettingView(ui.View): pass
+def is_soft(hand):
+    """
+    Checks if a hand is 'soft'.
+    A hand is soft if it contains an Ace that can be counted as 11 without busting.
+    """
+    # If there's no Ace, the hand can't be soft.
+    if not any(card[1] == 'A' for card in hand):
+        return False
 
+    # Calculate the hand's value treating all Aces as 1.
+    hard_value = 0
+    for _, rank in hand:
+        if rank == 'A':
+            hard_value += 1
+        else:
+            hard_value += RANKS[rank]
 
-class PlayerActionView(ui.View): pass
+    # If we can "upgrade" an Ace from 1 to 11 (by adding 10) and not bust,
+    # then the hand is soft.
+    return hard_value + 10 <= 21
+
 
 async def _initialize_table(logical_name: str):
     """
@@ -1878,7 +1895,8 @@ async def _dealer_turn(channel_id: int):
     await asyncio.sleep(1.0)
 
     while calculate_hand_value(table["dealer_hand"]) < 17 or (
-            calculate_hand_value(table["dealer_hand"]) == 17 and any(c[1] == 'A' for c in table["dealer_hand"])):
+          calculate_hand_value(table["dealer_hand"]) == 17 and is_soft(table["dealer_hand"])):
+
         table["dealer_hand"].append(table["shoe"].pop())
         await _update_game_embed(channel_id)
         await asyncio.sleep(1.0)
