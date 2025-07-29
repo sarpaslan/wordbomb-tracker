@@ -1834,9 +1834,9 @@ async def _update_game_embed(logical_name: str, results_log: list = None):
         print(f"[BJ ERROR] Failed to edit game message for table {logical_name}: {e}")
 
 
-async def _resolve_hand(channel_id: int):
+async def _resolve_hand(logical_name: str):
     """Compares all hands to the dealer's, processes payouts, and ends the hand."""
-    table = active_blackjack_tables.get(channel_id)
+    table = active_blackjack_tables.get(logical_name)
     if not table: return
 
     table["status"] = "hand_over"
@@ -1871,7 +1871,7 @@ async def _resolve_hand(channel_id: int):
             f"{'🎉' if payout > bet else '❌' if payout == 0 else '➖'} {p_data['member'].display_name}: {outcome}")
         p_data["bet"] = 0
 
-    await _update_game_embed(channel_id, results_log=results_log)
+    await _update_game_embed(logical_name, results_log=results_log)
     await asyncio.sleep(4)
 
     for member in table["waiting_to_join"]:
@@ -1882,27 +1882,77 @@ async def _resolve_hand(channel_id: int):
     table["status"] = "waiting_for_bets"
     for p_data in table["players"].values():
         p_data["status"] = "betting"
+        p_data["join_timestamp"] = datetime.utcnow()
 
-    await _update_game_embed(channel_id)
+    # --- THE CHANGE ---
+    _start_betting_monitor(logical_name)  # A new betting round has begun.
+
+    await _update_game_embed(logical_name)
+
+def _cancel_betting_monitor(logical_name: str):
+    """Safely finds and cancels the betting monitor task."""
+    table = active_blackjack_tables.get(logical_name)
+    if table:
+        task = table.get("betting_monitor_task")
+        if task and not task.done():
+            task.cancel()
+            table["betting_monitor_task"] = None
+
+def _start_betting_monitor(logical_name: str):
+    """Starts the background task to watch for inactive bettors."""
+    _cancel_betting_monitor(logical_name) # Ensure no old monitors are running
+    table = active_blackjack_tables.get(logical_name)
+    if table:
+        task = bot.loop.create_task(_monitor_betting_phase(logical_name))
+        table["betting_monitor_task"] = task
+        print(f"[BJ INFO] Started betting monitor for table '{logical_name}'.")
+
+async def _monitor_betting_phase(logical_name: str):
+    """A background task that runs every few seconds during the betting phase."""
+    while True:
+        await asyncio.sleep(5) # Check every 5 seconds
+        table = active_blackjack_tables.get(logical_name)
+
+        # If the table is gone or the game has started, stop monitoring.
+        if not table or table.get("status") != "waiting_for_bets":
+            print(f"[BJ INFO] Betting monitor for '{logical_name}' stopping.")
+            return
+
+        # We must iterate over a copy, as we may modify the dictionary by kicking players.
+        for player_id, p_data in list(table.get("players", {}).items()):
+            time_since_join = (datetime.utcnow() - p_data["join_timestamp"]).total_seconds()
+
+            # Kick if they haven't bet and 30 seconds have passed since they joined.
+            if p_data["bet"] == 0 and time_since_join > 30:
+                print(f"[BJ INFO] Kicking inactive bettor {player_id} from '{logical_name}'.")
+                channel = bot.get_channel(table.get("channel_id"))
+                if channel:
+                    await channel.send(f"**{p_data['member'].display_name}** was removed for not placing a bet.", delete_after=20)
+                # Use the main leave handler to correctly remove them.
+                await _handle_player_leave(p_data["member"], logical_name)
+                # Break the inner loop to re-evaluate the player list on the next 5s interval
+                break
 
 
-async def _dealer_turn(channel_id: int):
+async def _dealer_turn(logical_name: str):
     """The dealer plays their hand according to house rules."""
-    table = active_blackjack_tables.get(channel_id)
+    table = active_blackjack_tables.get(logical_name)
     if not table: return
 
-    await _update_game_embed(channel_id)
-    await asyncio.sleep(1.0)
+    # Update the embed to show the dealer's full hand before they play.
+    await _update_game_embed(logical_name)
+    await asyncio.sleep(1.5)
 
-    while calculate_hand_value(table["dealer_hand"]) < 17 or (
-          calculate_hand_value(table["dealer_hand"]) == 17 and is_soft(table["dealer_hand"])):
+    # The dealer hits until they have 17 or more, standing on soft 17.
+    while calculate_hand_value(table["dealer_hand"]) < 17 or \
+          (calculate_hand_value(table["dealer_hand"]) == 17 and is_soft(table["dealer_hand"])):
 
         table["dealer_hand"].append(table["shoe"].pop())
-        await _update_game_embed(channel_id)
-        await asyncio.sleep(1.0)
+        await _update_game_embed(logical_name)
+        await asyncio.sleep(1.5)
 
-    await _resolve_hand(channel_id)
-
+    # Once the loop finishes, all hands are final. Resolve the game.
+    await _resolve_hand(logical_name)
 
 async def _next_player_turn(logical_name: str):
     """Finds the next active player, gives them control, and starts the inactivity timer."""
@@ -1925,7 +1975,7 @@ async def _next_player_turn(logical_name: str):
 
     if next_player_id:
         # A player's turn is starting, so create and store the kick timer task.
-        task = bot.loop.create_task(_kick_inactive_player(logical_name, next_player_id))
+        task = bot.loop.create_task(_kick_inactive_player_turn(logical_name, next_player_id))
         table["turn_timeout_task"] = task
         print(f"[BJ DEBUG] Started inactivity timer for player {next_player_id} on table '{logical_name}'.")
         await _update_game_embed(logical_name)
@@ -1982,74 +2032,95 @@ async def _handle_player_leave(member: discord.Member, logical_name: str):
 async def _handle_player_join(member: discord.Member, logical_name: str):
     """Handles the logic for a player joining a table."""
     table = active_blackjack_tables.get(logical_name)
-    if not table:
-        print(f"[BJ ERROR] _handle_player_join called for a non-existent table: {logical_name}")
-        return
+    if not table: return
 
-    # --- If the game is already in progress, add the player to the waiting list ---
+    # --- THE CHANGE: Add a timestamp when a player is added ---
+    player_data_entry = {
+        "member": member,
+        "bet": 0,
+        "hand": [],
+        "status": "betting",
+        "join_timestamp": datetime.utcnow() # Track when they joined
+    }
+
     if table["status"] in ["player_turns", "dealer_turn", "hand_over"]:
-        # Prevent duplicate entries in the waiting list
         if not any(m.id == member.id for m in table["waiting_to_join"]):
             table["waiting_to_join"].append(member)
-
-    # --- If the table is open for betting, add them as an active player ---
+        try:
+            await member.send(f"You have joined **{logical_name}**. A hand is in progress. You'll be dealt in next!")
+        except discord.Forbidden: pass
     else:
         if member.id not in table["players"]:
-            table["players"][member.id] = {"member": member, "bet": 0, "hand": [], "status": "betting"}
+            table["players"][member.id] = player_data_entry
+            # When the first player joins and betting starts, start the monitor.
+            if len(table["players"]) == 1:
+                _start_betting_monitor(logical_name)
+        try:
+            await member.send(f"You have taken a seat at **{logical_name}**.")
+        except discord.Forbidden: pass
 
-        # If the table was brand new and waiting for its first player, change status
-        if table["status"] == "waiting_for_players":
-            table["status"] = "waiting_for_bets"
-
-    # Finally, update the public game embed to show the new player
     await _update_game_embed(logical_name)
 
 
-async def _start_new_hand(channel_id: int):
+async def _start_new_hand(logical_name: str):
     """Resets the table for a new hand, deals cards, and transitions to player turns."""
-    table = active_blackjack_tables.get(channel_id)
+    _cancel_betting_monitor(logical_name)
+    table = active_blackjack_tables.get(logical_name)
     if not table: return
 
+    # Correctly get channel_id from the table data for sending messages
+    channel_id = table.get("channel_id")
+
+    # Reshuffle logic
     shoe_size = len(create_shoe(2))
-    if len(table["shoe"]) < shoe_size * SHOE_RESHUFFLE_THRESHOLD:
+    if len(table.get("shoe", [])) < shoe_size * 0.25:  # Using a direct value like 0.25 instead of a constant
         table["shoe"] = create_shoe(2)
         channel = bot.get_channel(channel_id)
-        if channel: await channel.send("`DEALER: Shoe is low. Reshuffling...`", delete_after=10)
+        if channel:
+            await channel.send("`DEALER: Shoe is low. Reshuffling...`", delete_after=10)
         await asyncio.sleep(2)
 
     table["dealer_hand"] = []
 
+    # Kick players who didn't bet
     for p_id in list(table["players"].keys()):
         if table["players"][p_id]["bet"] == 0:
-            await _handle_player_leave(table["players"][p_id]["member"], channel_id)
-        else:
-            table["players"][p_id].update({"hand": [], "status": "playing"})
+            # This now correctly passes logical_name
+            await _handle_player_leave(table["players"][p_id]["member"], logical_name)
 
-    if not table["players"]: return await _initialize_table(channel_id)
+    # --- CRITICAL CHECK ---
+    # After the loop, check if the table still exists. If _handle_player_leave
+    # removed the last player, it would have deleted the table entry.
+    if logical_name not in active_blackjack_tables:
+        print(f"[BJ INFO] Table '{logical_name}' was closed because all players were removed. Aborting hand start.")
+        return
 
     # Deal Cards
     for _ in range(2):
-        for p_id in table["players"]: table["players"][p_id]["hand"].append(table["shoe"].pop())
+        for p_id in table["players"]:
+            table["players"][p_id]["hand"].append(table["shoe"].pop())
     table["dealer_hand"].extend([table["shoe"].pop(), table["shoe"].pop()])
 
     table["status"] = "player_turns"
+
+    # Update player statuses and check for blackjacks
     dealer_has_bj = calculate_hand_value(table["dealer_hand"]) == 21
-
-    for p_id, p_data in table["players"].items():
+    for p_data in table["players"].values():
+        p_data["status"] = "playing"  # Set status to playing first
         if calculate_hand_value(p_data["hand"]) == 21:
-            p_data["status"] = "blackjack"
+            p_data["status"] = "blackjack"  # Upgrade status if they have blackjack
 
-    await _update_game_embed(channel_id)
-    await asyncio.sleep(1.0)
+    # Update the embed with the dealt hands
+    await _update_game_embed(logical_name)
+    await asyncio.sleep(1.5)
 
     if dealer_has_bj:
-        await _resolve_hand(channel_id)
+        await _resolve_hand(logical_name)
     else:
-        # Before starting turns, check if all players have blackjack. If so, just resolve.
         if all(p.get("status") == "blackjack" for p in table["players"].values()):
-            await _resolve_hand(channel_id)
+            await _resolve_hand(logical_name)
         else:
-            await _next_player_turn(channel_id)
+            await _next_player_turn(logical_name)
 
 # --- BLOCK 4: MODALS AND VIEWS ---
 # (This block comes AFTER the core logic functions it uses)
@@ -2224,25 +2295,24 @@ class PlayerActionView(ui.View):
         await asyncio.sleep(1.0)
         await _next_player_turn(self.logical_name)
 
-async def _kick_inactive_player(logical_name: str, player_id: int):
-    """Waits 2 minutes and kicks a player if they are still the current player."""
-    await asyncio.sleep(120) # Wait for 2 minutes
+async def _kick_inactive_player_turn(logical_name: str, player_id: int):
+    """Waits 1 minute and kicks a player if it is still their turn."""
+    await asyncio.sleep(60) # Wait for 1 minute (was 120)
 
     table = active_blackjack_tables.get(logical_name)
-    # CRITICAL CHECK: Only proceed if the game is in the exact same state.
-    # This prevents kicking a player who timed out on a previous hand.
-    if table and table.get("status") == "player_turns" and table.get("current_player_id") == player_id:
-        print(f"[BJ INFO] Kicking inactive player {player_id} from table '{logical_name}'.")
-        player_data = table["players"].get(player_id)
-        if player_data and player_data.get("member"):
-            channel_id = table.get("channel_id")
-            channel = bot.get_channel(channel_id)
-            if channel:
-                await channel.send(f"**{player_data['member'].display_name}** was removed from the table due to inactivity.", delete_after=15)
-            # Use the existing leave handler to properly kick them
-            await _handle_player_leave(player_data["member"], logical_name)
-    else:
-        print(f"[BJ DEBUG] Inactivity timer for {player_id} on table '{logical_name}' expired harmlessly.")
+    if not table or table.get("status") != "player_turns" or table.get("current_player_id") != player_id:
+        # If game state has changed, the timer is irrelevant.
+        return
+
+    player_data = table["players"].get(player_id)
+    if player_data and player_data.get("member"):
+        print(f"[BJ INFO] Kicking inactive player {player_id} from '{logical_name}' during their turn.")
+        channel = bot.get_channel(table.get("channel_id"))
+        if channel:
+            # Send the alert message to the channel
+            await channel.send(f"**{player_data['member'].display_name}** was removed for inactivity during their turn.", delete_after=20)
+        # Use the main leave handler to correctly kick them and advance the game
+        await _handle_player_leave(player_data["member"], logical_name)
 
 class TableSelectionView(ui.View):
     def __init__(self):
