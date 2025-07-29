@@ -1875,13 +1875,13 @@ async def _dealer_turn(channel_id: int):
     if not table: return
 
     await _update_game_embed(channel_id)
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(1.0)
 
     while calculate_hand_value(table["dealer_hand"]) < 17 or (
             calculate_hand_value(table["dealer_hand"]) == 17 and any(c[1] == 'A' for c in table["dealer_hand"])):
         table["dealer_hand"].append(table["shoe"].pop())
         await _update_game_embed(channel_id)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(1.0)
 
     await _resolve_hand(channel_id)
 
@@ -2022,7 +2022,7 @@ async def _start_new_hand(channel_id: int):
             p_data["status"] = "blackjack"
 
     await _update_game_embed(channel_id)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)
 
     if dealer_has_bj:
         await _resolve_hand(channel_id)
