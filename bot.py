@@ -2835,36 +2835,36 @@ async def removestats_error(ctx, error):
         print(f"An unhandled error occurred in the removestats command: {error}")
 
 
-@bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
-async def delete_channel(ctx: commands.Context, channel_id: int):
-    """
-    Deletes the channel with the given ID.
-    """
-    # Try to fetch the channel
-    ALLOWED_USER_ID = 849827666064048178
-
-    if ctx.author.id != ALLOWED_USER_ID:
-        return await ctx.send("🚫 You are not authorized to use this powerful command.")
-
-    channel = bot.get_channel(channel_id)
-
-    if not channel:
-        await ctx.send("❌ Could not find a channel with that ID.")
-        return
-
-    # Double-check it's in the same guild
-    if channel.guild != ctx.guild:
-        await ctx.send("❌ That channel doesn't belong to this server.")
-        return
-
-    try:
-        await channel.delete(reason=f"Deleted by {ctx.author} via command.")
-        await ctx.send(f"✅ Channel **#{channel.name}** has been deleted.")
-    except discord.Forbidden:
-        await ctx.send("❌ I don't have permission to delete that channel.")
-    except Exception as e:
-        await ctx.send("❌ An unexpected error occurred.")
-        print(f"[ERROR] Failed to delete channel {channel_id}: {e}")
+# @bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
+# async def delete_channel(ctx: commands.Context, channel_id: int):
+#     """
+#     Deletes the channel with the given ID.
+#     """
+#     # Try to fetch the channel
+#     ALLOWED_USER_ID = 849827666064048178
+#
+#     if ctx.author.id != ALLOWED_USER_ID:
+#         return await ctx.send("🚫 You are not authorized to use this powerful command.")
+#
+#     channel = bot.get_channel(channel_id)
+#
+#     if not channel:
+#         await ctx.send("❌ Could not find a channel with that ID.")
+#         return
+#
+#     # Double-check it's in the same guild
+#     if channel.guild != ctx.guild:
+#         await ctx.send("❌ That channel doesn't belong to this server.")
+#         return
+#
+#     try:
+#         await channel.delete(reason=f"Deleted by {ctx.author} via command.")
+#         await ctx.send(f"✅ Channel **#{channel.name}** has been deleted.")
+#     except discord.Forbidden:
+#         await ctx.send("❌ I don't have permission to delete that channel.")
+#     except Exception as e:
+#         await ctx.send("❌ An unexpected error occurred.")
+#         print(f"[ERROR] Failed to delete channel {channel_id}: {e}")
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
