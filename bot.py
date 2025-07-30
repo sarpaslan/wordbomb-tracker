@@ -1923,7 +1923,7 @@ async def _monitor_betting_phase(logical_name: str):
             time_since_join = (datetime.utcnow() - p_data["join_timestamp"]).total_seconds()
 
             # Kick if they haven't bet and 30 seconds have passed since they joined.
-            if p_data["bet"] == 0 and time_since_join > 30:
+            if p_data["bet"] == 0 and time_since_join > 60:
                 print(f"[BJ INFO] Kicking inactive bettor {player_id} from '{logical_name}'.")
                 channel = bot.get_channel(table.get("channel_id"))
                 if channel:
