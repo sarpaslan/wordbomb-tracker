@@ -2342,7 +2342,7 @@ class TableSelectionView(ui.View):
                 return await interaction.followup.send(
                     "Error: The game channel was not found and has been reset. Please try again.", ephemeral=True)
 
-            await target_channel.set_permissions(interaction.user, read_messages=True, send_messages=False,
+            await target_channel.set_permissions(interaction.user, read_messages=True, send_messages=True,
                                                  read_message_history=True)
             await interaction.followup.send(f"Joining {logical_name}! Click here: {target_channel.mention}",
                                             ephemeral=True)
@@ -2359,7 +2359,7 @@ class TableSelectionView(ui.View):
                 interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True,
                                                                   manage_messages=True),
-                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=False,
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True,
                                                               read_message_history=True)
             }
 
