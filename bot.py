@@ -34,7 +34,7 @@ APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S
 active_coinflips = set()
 
 # --- BLACKJACK CONSTANTS AND STATE ---
-SUITS = {"Spades": "♠️", "Hearts": "♥️", "Clubs": "♣️", "Diamonds": "♦️"}
+SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11}
 
 # --- ROULETTE GAME CONSTANTS AND STATE ---
@@ -58,18 +58,10 @@ DOZEN_2 = set(range(13, 25))
 DOZEN_3 = set(range(25, 37))
 
 # This dictionary will hold all active games, with the user's ID as the key.
-active_blackjack_tables = {}
+active_blackjack_games = {}
 active_baccarat_games = {}
 active_duels = {}
 active_roulette_games = {}
-
-BLACKJACK_CATEGORY_ID = 1399582975146065941 # <-- PASTE YOUR CATEGORY ID HERE
-# The logical table slots that players can choose from.
-LOGICAL_TABLES = {
-    "Table 1": {"name": "🃏-table-one"},
-    "Table 2": {"name": "🃏-table-two"},
-    "High Roller": {"name": "🃏-high-roller"}
-}
 
 MAX_PLAYERS_PER_TABLE = 5 # This logic can be handled differently or kept if you wish
 SHOE_RESHUFFLE_THRESHOLD = 0.25 # This is fine to keep
@@ -1675,753 +1667,477 @@ async def coinflip(ctx: commands.Context, amount: int):
 
 # Blackjack
 
-def create_shoe(num_decks=2):
-    """Creates a multi-deck shoe and shuffles it."""
-    shoe = []
-    for _ in range(num_decks):
-        for suit in SUITS:
-            for rank in RANKS:
-                shoe.append((suit, rank))
-    random.shuffle(shoe)
-    return shoe
+class BlackjackGame:
+    """A class to represent the state of a single blackjack game."""
+
+    def __init__(self, player, bet):
+        self.player = player
+        self.bet = bet
+        # FIX: The shoe is now created with suits and ranks
+        self.shoe = self._create_shoe(4)
+        self.max_shoe_size = len(self.shoe)
+
+        self.player_hand = []
+        self.dealer_hand = []
+
+        self.session_winnings = 0
+        self.session_net = 0
+
+        self.status = "playing"
+        self.message = None
+
+    # FIX: This function now creates a proper deck of (suit, rank) tuples.
+    def _create_shoe(self, num_decks):
+        """Creates and shuffles a multi-deck shoe."""
+        shoe = []
+        for _ in range(num_decks):
+            for suit in SUITS:
+                for rank in RANKS:
+                    shoe.append((suit, rank))
+        random.shuffle(shoe)
+        return shoe
+
+    def deal_card(self, hand):
+        """Deals a single card from the shoe to a specified hand."""
+        if len(self.shoe) < self.max_shoe_size * 0.25:
+            self.shoe = self._create_shoe(4)
+        card = self.shoe.pop()
+        hand.append(card)
+
+    def initial_deal(self):
+        """Performs the initial deal for player and dealer."""
+        self.player_hand = []
+        self.dealer_hand = []
+        self.deal_card(self.player_hand)
+        self.deal_card(self.dealer_hand)
+        self.deal_card(self.player_hand)
+        self.deal_card(self.dealer_hand)
 
 
 def calculate_hand_value(hand):
-    """Calculates the value of a hand, correctly handling Aces."""
-    value, num_aces = 0, 0
-    for _, rank in hand:
-        value += RANKS[rank]
-        if rank == 'A':
-            num_aces += 1
-    while value > 21 and num_aces > 0:
+    """Calculates the value of a hand, handling Aces correctly."""
+    # We access the rank via card[1]
+    value = sum(RANKS[card[1]] for card in hand)
+    # Check for aces by looking at card[1]
+    num_aces = sum(1 for card in hand if card[1] == 'A')
+    while value > 21 and num_aces:
         value -= 10
         num_aces -= 1
     return value
 
-
-def hand_to_string(hand, is_dealer=False, hide_card=False):
-    """Converts a list of cards into a visually appealing string."""
-    if is_dealer and hide_card:
-        return f"`{SUITS[hand[0][0]]} {hand[0][1]}` `[?]`"
-    return " ".join([f"`{SUITS[card[0]]} {card[1]}`" for card in hand])
-
-
-def is_soft(hand):
-    """
-    Checks if a hand is 'soft'.
-    A hand is soft if it contains an Ace that can be counted as 11 without busting.
-    """
-    # If there's no Ace, the hand can't be soft.
-    if not any(card[1] == 'A' for card in hand):
-        return False
-
-    # Calculate the hand's value treating all Aces as 1.
-    hard_value = 0
-    for _, rank in hand:
-        if rank == 'A':
-            hard_value += 1
-        else:
-            hard_value += RANKS[rank]
-
-    # If we can "upgrade" an Ace from 1 to 11 (by adding 10) and not bust,
-    # then the hand is soft.
-    return hard_value + 10 <= 21
+# FIX: Now correctly formats a hand of (suit, rank) tuples into a string.
+def hand_to_string(hand, is_dealer_turn=False):
+    """Converts a hand to a string, hiding the dealer's second card if necessary."""
+    if not hand:
+        return ""
+    # For the dealer's initial turn, show the first card and a hidden card
+    if not is_dealer_turn and len(hand) == 2:
+         # Format the first card correctly from the tuple hand[0]
+         return f"`{hand[0][0]} {hand[0][1]}` `[?]`"
+    # For all other cases, format each (suit, rank) tuple
+    return " ".join([f"`{card[0]} {card[1]}`" for card in hand])
 
 
-async def _initialize_table(logical_name: str):
-    """
-    Posts the initial game message and view into a newly created channel.
-    This function assumes the table state already exists in active_blackjack_tables.
-    """
-    table = active_blackjack_tables.get(logical_name)
-    if not table:
-        print(f"[BJ CRITICAL ERROR] _initialize_table was called for a non-existent logical table: '{logical_name}'")
-        return
+async def create_game_embed(game: BlackjackGame, result_text=None, color=discord.Color.blue()):
+    """Creates the main embed for the blackjack game."""
+    player_balance = await get_effective_balance(game.player.id)
 
-    # Get the channel object from the ID we stored when creating it
-    channel_id = table.get("channel_id")
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        print(f"[BJ CRITICAL ERROR] Could not find channel with ID {channel_id} for table '{logical_name}'")
-        return
+    embed = discord.Embed(color=color)
+    embed.set_author(name=f"{game.player.display_name}'s Table", icon_url=game.player.display_avatar.url)
 
-    # Create the initial welcome embed
-    embed = discord.Embed(
-        title=f"🎲 {logical_name} 🎲",
-        description="The table is open! Use the buttons below to place a bet or start the hand.",
-        color=discord.Color.dark_green()
+    # --- THIS IS THE CORRECTED PART ---
+    # We now combine all stats into one field for cleaner formatting.
+    stats_text = (
+        f"<:wbcoin:1398780929664745652> **Your Balance:** {player_balance:,}\n"
+        f"💸 **Current Bet:** {game.bet:,}\n"
+        f"📈 **Session Net:** {game.session_net:+,}"
+    )
+    embed.add_field(name="Session Stats", value=stats_text, inline=False)
+    # --- END OF CORRECTION ---
+
+    # Dealer's hand
+    dealer_value = calculate_hand_value(game.dealer_hand)
+    is_dealer_turn = game.status == "hand_over"
+    dealer_value_str = f"({dealer_value})" if is_dealer_turn else ""
+    embed.add_field(
+        name=f"Dealer's Hand {dealer_value_str}",
+        value=hand_to_string(game.dealer_hand, is_dealer_turn),
+        inline=False
     )
 
-    # Post the new message and attach the live betting view
-    # It's crucial to pass the logical_name to the view
-    new_message = await channel.send(embed=embed, view=BettingView(logical_name))
-
-    # IMPORTANT: Store the reference to this new, live message back into the table state.
-    # This is how all future updates will find and edit the message.
-    table["game_message"] = new_message
-
-    print(f"[BJ INFO] Initialized new game message in channel '{channel.name}' for table '{logical_name}'.")
-
-# This function is now defined first as it's called by almost every other function.
-async def _update_game_embed(logical_name: str, results_log: list = None):
-    """The single source of truth for updating the game's visual state."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    # If the message reference is lost, try to recover by re-initializing.
-    # if not table.get("game_message"):
-    #     print(f"[BJ RECOVERY] Table state for {logical_name} has no message. Re-initializing.")
-    #     await _initialize_table(logical_name)
-    #     return
-
-    game_message = table["game_message"]
-    embed = discord.Embed(title=f"🎲 {logical_name} 🎲", color=0x2E3136)
-    view = None
-
-    player_lines = []
-    for p_id, p_data in table.get("players", {}).items():
-        member = p_data.get("member")
-        if not member: continue
-        status_emoji = {"betting": "💰", "playing": "🤔", "stood": "✅", "busted": "❌", "blackjack": "🎉"}.get(
-            p_data.get("status"), "")
-        bet_str = f"Bet: `{p_data.get('bet', 0):,}`" if p_data.get('bet', 0) > 0 else ""
-        hand = p_data.get('hand', [])
-        hand_value = calculate_hand_value(hand)
-        hand_str = f"({hand_value}) {hand_to_string(hand)}" if hand else ""
-        turn_indicator = "▶️ " if table.get("current_player_id") == p_id else ""
-        player_lines.append(f"{turn_indicator}{status_emoji} **{member.display_name}** {bet_str} {hand_str}")
-
-    if table.get("waiting_to_join"):
-        waiting_names = ", ".join([m.display_name for m in table["waiting_to_join"]])
-        player_lines.append(f"\n*Waiting for next hand: {waiting_names}*")
-
-    embed.add_field(name="Players", value="\n".join(player_lines) if player_lines else "No players seated.",
-                    inline=False)
-
-    dealer_hand = table.get("dealer_hand", [])
-    if dealer_hand:
-        hide_card = table.get("status") == "player_turns"
-        dealer_value = calculate_hand_value(dealer_hand) if not hide_card else RANKS.get(dealer_hand[0][1], 0)
-        embed.add_field(name=f"Dealer's Hand ({dealer_value if not hide_card else '?'})",
-                        value=hand_to_string(dealer_hand, is_dealer=True, hide_card=hide_card), inline=False)
-
-    shoe_size = len(create_shoe(2))
-    embed.set_footer(text=f"Shoe Status: {len(table.get('shoe', []))} / {shoe_size} cards remaining.")
-
-    game_status = table.get("status")
-    if game_status == "waiting_for_bets" or game_status == "waiting_for_players":
-        embed.description = "The table is open for betting. Place your bets to be included in the next hand!"
-        view = BettingView(logical_name)  # Pass logical_name
-    elif game_status == "player_turns":
-        current_player_id = table.get('current_player_id')
-        current_player = table.get("players", {}).get(current_player_id)
-        if current_player and current_player.get("member"):
-            embed.description = f"It is **{current_player.get('member').display_name}**'s turn to act."
-            player_balance = await get_effective_balance(current_player_id)
-            can_double = player_balance >= current_player.get('bet', 0) and len(current_player.get('hand', [])) == 2
-            view = PlayerActionView(logical_name, can_double=can_double) # Pass logical_name
-    elif game_status == "dealer_turn":
-        embed.description = "All players have acted. The dealer will now play their hand."
-    elif game_status == "hand_over":
-        embed.description = "**Hand Results:**\n" + "\n".join(results_log if results_log else ["Hand concluded."])
-
-    try:
-        await game_message.edit(embed=embed, view=view)
-    except discord.NotFound:
-        print(f"[BJ RECOVERY] Game message for {logical_name} was deleted. Re-initializing table.")
-        await _initialize_table(logical_name)
-    except Exception as e:
-        print(f"[BJ ERROR] Failed to edit game message for table {logical_name}: {e}")
-
-
-async def _resolve_hand(logical_name: str):
-    """Compares all hands to the dealer's, processes payouts, and ends the hand."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    table["status"] = "hand_over"
-    dealer_value = calculate_hand_value(table["dealer_hand"])
-    dealer_busted = dealer_value > 21
-
-    results_log = []
-
-    for p_id, p_data in list(table["players"].items()):
-        player_value = calculate_hand_value(p_data["hand"])
-        bet = p_data["bet"]
-        payout = 0
-
-        if p_data["status"] == "blackjack":
-            payout = int(bet * 2.5) if dealer_value != 21 else bet  # 3:2 payout, push on dealer BJ
-            outcome = "BLACKJACK!" if payout > bet else "Pushed with Blackjack."
-        elif p_data["status"] == "busted":
-            payout = 0
-            outcome = "Busted."
-        elif dealer_busted or player_value > dealer_value:
-            payout = bet * 2  # Win 1:1
-            outcome = f"Wins ({player_value} vs {dealer_value})."
-        elif player_value < dealer_value:
-            payout = 0
-            outcome = f"Loses ({player_value} vs {dealer_value})."
-        else:  # Push
-            payout = bet
-            outcome = f"Pushed with {player_value}."
-
-        await modify_coin_adjustment(p_id, payout)  # Give back winnings (original bet was already deducted)
-        results_log.append(
-            f"{'🎉' if payout > bet else '❌' if payout == 0 else '➖'} {p_data['member'].display_name}: {outcome}")
-        p_data["bet"] = 0
-
-    await _update_game_embed(logical_name, results_log=results_log)
-    await asyncio.sleep(4)
-
-    for member in table["waiting_to_join"]:
-        if member.id not in table["players"]:
-            table["players"][member.id] = {"member": member, "bet": 0, "hand": [], "status": "betting"}
-    table["waiting_to_join"].clear()
-
-    table["status"] = "waiting_for_bets"
-    for p_data in table["players"].values():
-        p_data["status"] = "betting"
-        p_data["join_timestamp"] = datetime.utcnow()
-
-    # --- THE CHANGE ---
-    _start_betting_monitor(logical_name)  # A new betting round has begun.
-
-    await _update_game_embed(logical_name)
-
-def _cancel_betting_monitor(logical_name: str):
-    """Safely finds and cancels the betting monitor task."""
-    table = active_blackjack_tables.get(logical_name)
-    if table:
-        task = table.get("betting_monitor_task")
-        if task and not task.done():
-            task.cancel()
-            table["betting_monitor_task"] = None
-
-def _start_betting_monitor(logical_name: str):
-    """Starts the background task to watch for inactive bettors."""
-    _cancel_betting_monitor(logical_name) # Ensure no old monitors are running
-    table = active_blackjack_tables.get(logical_name)
-    if table:
-        task = bot.loop.create_task(_monitor_betting_phase(logical_name))
-        table["betting_monitor_task"] = task
-        print(f"[BJ INFO] Started betting monitor for table '{logical_name}'.")
-
-async def _monitor_betting_phase(logical_name: str):
-    """A background task that runs every few seconds during the betting phase."""
-    while True:
-        await asyncio.sleep(5) # Check every 5 seconds
-        table = active_blackjack_tables.get(logical_name)
-
-        # If the table is gone or the game has started, stop monitoring.
-        if not table or table.get("status") != "waiting_for_bets":
-            print(f"[BJ INFO] Betting monitor for '{logical_name}' stopping.")
-            return
-
-        # We must iterate over a copy, as we may modify the dictionary by kicking players.
-        for player_id, p_data in list(table.get("players", {}).items()):
-            time_since_join = (datetime.utcnow() - p_data["join_timestamp"]).total_seconds()
-
-            # Kick if they haven't bet and 30 seconds have passed since they joined.
-            if p_data["bet"] == 0 and time_since_join > 60:
-                print(f"[BJ INFO] Kicking inactive bettor {player_id} from '{logical_name}'.")
-                channel = bot.get_channel(table.get("channel_id"))
-                if channel:
-                    await channel.send(f"**{p_data['member'].display_name}** was removed for not placing a bet.", delete_after=20)
-                # Use the main leave handler to correctly remove them.
-                await _handle_player_leave(p_data["member"], logical_name)
-                # Break the inner loop to re-evaluate the player list on the next 5s interval
-                break
-
-
-async def _dealer_turn(logical_name: str):
-    """The dealer plays their hand according to house rules."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    # Update the embed to show the dealer's full hand before they play.
-    await _update_game_embed(logical_name)
-    await asyncio.sleep(1.5)
-
-    # The dealer hits until they have 17 or more, standing on soft 17.
-    while calculate_hand_value(table["dealer_hand"]) < 17 or \
-          (calculate_hand_value(table["dealer_hand"]) == 17 and is_soft(table["dealer_hand"])):
-
-        table["dealer_hand"].append(table["shoe"].pop())
-        await _update_game_embed(logical_name)
-        await asyncio.sleep(1.5)
-
-    # Once the loop finishes, all hands are final. Resolve the game.
-    await _resolve_hand(logical_name)
-
-async def _next_player_turn(logical_name: str):
-    """Finds the next active player, gives them control, and starts the inactivity timer."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    # Cancel any previous timer before starting a new one
-    old_task = table.get("turn_timeout_task")
-    if old_task and not old_task.done():
-        old_task.cancel()
-
-    # Find the next player
-    next_player_id = None
-    for p_id, p_data in table["players"].items():
-        if p_data["status"] == "playing":
-            next_player_id = p_id
-            break
-
-    table["current_player_id"] = next_player_id
-
-    if next_player_id:
-        # A player's turn is starting, so create and store the kick timer task.
-        task = bot.loop.create_task(_kick_inactive_player_turn(logical_name, next_player_id))
-        table["turn_timeout_task"] = task
-        print(f"[BJ DEBUG] Started inactivity timer for player {next_player_id} on table '{logical_name}'.")
-        await _update_game_embed(logical_name)
-    else:
-        # No more players, it's the dealer's turn. Clear the timer task.
-        table["turn_timeout_task"] = None
-        table["status"] = "dealer_turn"
-        await _dealer_turn(logical_name)
-
-
-async def _handle_player_leave(member: discord.Member, logical_name: str):
-    """Handles a player leaving the game, and deletes the channel if they are the last one."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    # Always remove the player from the lists if they exist.
-    was_current_turn = table.get("current_player_id") == member.id
-    player_data = table.get("players", {}).pop(member.id, None)
-    table["waiting_to_join"] = [m for m in table.get("waiting_to_join", []) if m.id != member.id]
-
-    # Refund bet if they had one placed
-    if player_data and player_data.get("bet", 0) > 0:
-        await modify_coin_adjustment(member.id, player_data["bet"])
-
-    # --- CRITICAL CHECK: ARE THEY THE LAST PLAYER? ---
-    if not table.get("players") and not table.get("waiting_to_join"):
-        print(f"[BJ INFO] Last player left '{logical_name}'. Deleting channel.")
-        channel_id = table.get("channel_id")
-        channel = bot.get_channel(channel_id)
-
-        if channel:
-            try:
-                await channel.delete(reason="Blackjack table closed.")
-            except discord.Forbidden:
-                print(f"[BJ CRITICAL ERROR] FAILED TO DELETE CHANNEL {channel_id}. BOT LACKS PERMISSIONS.")
-            except discord.NotFound:
-                pass # Channel was already gone.
-
-        # Remove the table from the active state completely
-        del active_blackjack_tables[logical_name]
-        return # Stop execution here.
-
-    # --- If players remain, update the game state ---
-    channel = bot.get_channel(table['channel_id'])
-    if channel:
-       await channel.set_permissions(member, overwrite=None) # Revoke perms for the leaving player
-
-    if was_current_turn:
-        await _next_player_turn(logical_name)
-    else:
-        await _update_game_embed(logical_name)
-
-
-async def _handle_player_join(member: discord.Member, logical_name: str):
-    """Handles the logic for a player joining a table."""
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    # --- THE CHANGE: Add a timestamp when a player is added ---
-    player_data_entry = {
-        "member": member,
-        "bet": 0,
-        "hand": [],
-        "status": "betting",
-        "join_timestamp": datetime.utcnow() # Track when they joined
-    }
-
-    if table["status"] in ["player_turns", "dealer_turn", "hand_over"]:
-        if not any(m.id == member.id for m in table["waiting_to_join"]):
-            table["waiting_to_join"].append(member)
-    else:
-        if member.id not in table["players"]:
-            table["players"][member.id] = player_data_entry
-            # When the first player joins and betting starts, start the monitor.
-            if len(table["players"]) == 1:
-                _start_betting_monitor(logical_name)
-
-    await _update_game_embed(logical_name)
-
-
-async def _start_new_hand(logical_name: str):
-    """Resets the table for a new hand, deals cards, and transitions to player turns."""
-    _cancel_betting_monitor(logical_name)
-    table = active_blackjack_tables.get(logical_name)
-    if not table: return
-
-    channel_id = table.get("channel_id")
-    channel = bot.get_channel(channel_id)
-
-    # Reshuffle logic
-    shoe_size = len(create_shoe(2))
-    if len(table.get("shoe", [])) < shoe_size * 0.25:
-        table["shoe"] = create_shoe(2)
-        if channel:
-            await channel.send("`DEALER: Shoe is low. Reshuffling...`", delete_after=10)
-        await asyncio.sleep(2)
-
-    # --- THE DEFINITIVE FIX IS HERE ---
-    # First, reset the dealer's hand for the new round.
-    table["dealer_hand"] = []
-
-    # Now, process players: kick those who didn't bet, and RESET the hands of those who did.
-    for p_id in list(table["players"].keys()):
-        player_data = table["players"][p_id]
-        if player_data["bet"] == 0:
-            await _handle_player_leave(player_data["member"], logical_name)
-        else:
-            # This resets the player for the new hand.
-            player_data["hand"] = []
-            player_data["status"] = "playing"
-
-    # If all players were kicked, abort the hand.
-    if logical_name not in active_blackjack_tables or not table.get("players"):
-        print(f"[BJ INFO] Table '{logical_name}' is empty. Aborting hand start.")
-        return
-
-    # Deal Cards to the remaining players
-    for _ in range(2):
-        for p_id in table["players"]:
-            table["players"][p_id]["hand"].append(table["shoe"].pop())
-    table["dealer_hand"].extend([table["shoe"].pop(), table["shoe"].pop()])
-
-    table["status"] = "player_turns"
-
-    # After dealing, check if anyone got a natural Blackjack.
-    dealer_has_bj = calculate_hand_value(table["dealer_hand"]) == 21
-    for p_data in table["players"].values():
-        if calculate_hand_value(p_data["hand"]) == 21:
-            p_data["status"] = "blackjack"
-
-    # Update the embed to show the newly dealt hands
-    await _update_game_embed(logical_name)
-    await asyncio.sleep(1.5)
-
-    # Resolve the hand immediately if the dealer has BJ or if all players do.
-    if dealer_has_bj or all(p.get("status") == "blackjack" for p in table["players"].values()):
-        await _resolve_hand(logical_name)
-    else:
-        await _next_player_turn(logical_name)
-
-# --- BLOCK 4: MODALS AND VIEWS ---
-# (This block comes AFTER the core logic functions it uses)
-
-class BetModal(ui.Modal, title="Place Your Bet"):
-    def __init__(self, logical_name: str): # CHANGED
-        super().__init__()
-        self.logical_name = logical_name # CHANGED
-        self.bet_amount = ui.TextInput(label="Bet Amount", placeholder="Enter a number or 'all'", required=True)
-        self.add_item(self.bet_amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # --- CRITICAL FIX ---
-        # 1. Defer the interaction IMMEDIATELY. This tells Discord "I'm working on it"
-        #    and gives you a 15-minute window to respond. Using ephemeral=True means
-        #    any follow-up error messages will only be visible to the user.
-        await interaction.response.defer(ephemeral=True, thinking=False)
-
-        table = active_blackjack_tables.get(self.logical_name)
-        if not table or interaction.user.id not in table["players"]:
-            # 2. Use followup.send for all messages after deferring.
-            return await interaction.followup.send("You are not at this table.", ephemeral=True)
-
-        player_data = table["players"][interaction.user.id]
-        if player_data.get("bet", 0) > 0:
-            return await interaction.followup.send("You have already placed a bet for this hand.", ephemeral=True)
-
-        balance = await get_effective_balance(interaction.user.id)
-        bet_str = self.bet_amount.value.lower().strip()
-
-        try:
-            amount = balance if bet_str == 'all' else int(bet_str)
-        except ValueError:
-            return await interaction.followup.send("Invalid bet amount.", ephemeral=True)
-
-        if amount <= 0:
-            return await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
-        if balance < amount:
-            return await interaction.followup.send(f"You don't have enough coins! You have **{balance:,}**.",
-                                                   ephemeral=True)
-
-        # All checks passed, now we modify the game state.
-        player_data["bet"] = amount
-        await modify_coin_adjustment(interaction.user.id, -amount)  # Pre-deduct bet
-
-        # 3. There is nothing left to "followup" with since the public embed will update.
-        #    The deferral is complete. We just update the main game message.
-        await _update_game_embed(self.logical_name) # CHANGED
-
-class BettingView(ui.View):
-    def __init__(self, logical_name: str): # CHANGED
-        super().__init__(timeout=None)
-        self.logical_name = logical_name # CHANGED
-
-    @ui.button(label="Place Bet", style=discord.ButtonStyle.green, custom_id="bj_place_bet")
-    async def place_bet(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(BetModal(self.logical_name)) # CHANGED
-
-    @ui.button(label="Start Hand", style=discord.ButtonStyle.primary, custom_id="bj_start_hand")
-    async def start_hand(self, interaction: discord.Interaction, button: ui.Button):
-        table = active_blackjack_tables.get(self.logical_name) # CHANGED
-        if not table or interaction.user.id not in table["players"]:
-            return  # Silently fail if the interactor is not a seated player
-
-        total_players = len(table["players"])
-        if total_players == 0:
-            return  # Should not be possible to click, but a good safeguard
-
-        # Count how many players have a bet greater than 0
-        players_who_bet = sum(1 for p in table["players"].values() if p.get("bet", 0) > 0)
-
-        # Calculate the required number of players (more than half)
-        # We use math.ceil to correctly handle odd numbers. e.g., ceil(5 / 2) = 3.
-        required_bettors = math.ceil(total_players / 2)
-
-        # If we require at least 1 player, but the logic for > half would yield 1 for a 1-player game, let's ensure it's at least 1.
-        if total_players == 1:
-            required_bettors = 1
-        else:
-            # For 2+ players, "more than half" means floor(N/2) + 1
-            required_bettors = (total_players // 2) + 1
-
-        if players_who_bet < required_bettors:
-            return await interaction.response.send_message(
-                f"Cannot start the hand yet. "
-                f"More than half the players must bet.\n"
-                f"**{players_who_bet} / {total_players}** have bet. Need **{required_bettors}** to start.",
-                ephemeral=True
-            )
-
-        # If the check passes, proceed with starting the hand.
-        await interaction.response.defer()
-        await _start_new_hand(self.logical_name) # CHANGED
-
-    @ui.button(label="Leave Table", style=discord.ButtonStyle.danger, custom_id="bj_leave_table")
-    async def leave_table(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer()
-        await _handle_player_leave(interaction.user, self.logical_name)
-
-
-class PlayerActionView(ui.View):
-    def __init__(self, logical_name: str, can_double: bool):
-        # The View now lives forever until the bot restarts.
-        super().__init__(timeout=None)
-        self.logical_name = logical_name
-        # The logic to disable the double down button remains.
-        self.double_down.disabled = not can_double
-
-    # The on_timeout method has been COMPLETELY REMOVED.
-    # The inactivity logic will be handled by a separate background task.
+    # Player's hand
+    player_value = calculate_hand_value(game.player_hand)
+    embed.add_field(
+        name=f"Your Hand ({player_value})",
+        value=hand_to_string(game.player_hand, True),  # Always show player's full hand
+        inline=False
+    )
+
+    if result_text:
+        embed.description = result_text
+
+    # Shoe progress footer
+    embed.set_footer(text=f"Shoe: {len(game.shoe)} / {game.max_shoe_size} cards remaining")
+    return embed
+
+
+class ActionView(discord.ui.View):
+    """The view with buttons for Hit, Stand, Double Down, and Surrender."""
+
+    # MODIFICATION: Added 'player_balance' to the constructor
+    def __init__(self, game: BlackjackGame, player_balance: int):
+        super().__init__(timeout=120)
+        self.game = game
+
+        # FIX: Use the passed-in balance directly. No more asyncio.run()
+        if len(self.game.player_hand) != 2 or player_balance < self.game.bet:
+            self.double_down.disabled = True
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # This check is still useful to give instant feedback.
-        table = active_blackjack_tables.get(self.logical_name)
-        if not table or interaction.user.id != table.get("current_player_id"):
-            await interaction.response.send_message("It is not your turn.", ephemeral=True)
+        if interaction.user.id != self.game.player.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
         return True
 
-    async def _cancel_turn_timer(self):
-        """A helper to safely cancel the inactivity timer."""
-        table = active_blackjack_tables.get(self.logical_name)
-        if table:
-            task = table.get("turn_timeout_task")
-            if task and not task.done():
-                task.cancel()
-                print(f"[BJ DEBUG] Turn timer for table '{self.logical_name}' cancelled.")
+    async def on_timeout(self):
+        if self.game.player.id in active_blackjack_games:
+            # Stand the player automatically if they are still in a game
+            if self.game.status == "playing":
+                await handle_hand_end(self.game, "You took too long to act and your hand was stood automatically.")
+            # Otherwise, just clean up
+            else:
+                del active_blackjack_games[self.game.player.id]
+                embed = self.game.message.embeds[0]
+                embed.description = "Game ended due to inactivity."
+                await self.game.message.edit(embed=embed, view=None)
 
-    @ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
-    async def hit(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, custom_id="bj_hit")
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self._cancel_turn_timer() # Cancel the kick timer
+        self.game.deal_card(self.game.player_hand)
+        player_value = calculate_hand_value(self.game.player_hand)
 
-        table = active_blackjack_tables.get(self.logical_name)
-        p_data = table["players"][interaction.user.id]
-        p_data["hand"].append(table["shoe"].pop())
-        self.double_down.disabled = True
-
-        if calculate_hand_value(p_data["hand"]) >= 21:
-            p_data["status"] = "busted" if calculate_hand_value(p_data["hand"]) > 21 else "stood"
-            await _update_game_embed(self.logical_name)
-            await asyncio.sleep(1)
-            await _next_player_turn(self.logical_name)
+        if player_value >= 21:
+            self.game.status = "hand_over"
+            await handle_hand_end(self.game)
         else:
-            # We must re-send the view to show the disabled double-down button
-            await _update_game_embed(self.logical_name)
+            # Update embed, disable Double Down button after hitting
+            self.double_down.disabled = True
+            player_balance = await get_effective_balance(
+                self.game.player.id)  # We need the current balance to update the view
+            embed = await create_game_embed(self.game)
+            # We must pass the balance to the new view instance
+            await self.game.message.edit(embed=embed, view=self)
 
-
-    @ui.button(label="Stand", style=discord.ButtonStyle.danger, custom_id="bj_stand")
-    async def stand(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.primary, custom_id="bj_stand")
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self._cancel_turn_timer() # Cancel the kick timer
+        self.game.status = "hand_over"
+        await handle_hand_end(self.game)
 
-        table = active_blackjack_tables.get(self.logical_name)
-        table["players"][interaction.user.id]["status"] = "stood"
-        await _next_player_turn(self.logical_name)
-
-    @ui.button(label="Double Down", style=discord.ButtonStyle.primary, custom_id="bj_double")
-    async def double_down(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.primary, custom_id="bj_double")
+    async def double_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self._cancel_turn_timer() # Cancel the kick timer
+        # Double the bet
+        await modify_coin_adjustment(self.game.player.id, -self.game.bet)
+        self.game.bet *= 2
 
-        table = active_blackjack_tables.get(self.logical_name)
-        p_data = table["players"][interaction.user.id]
+        # Deal one final card
+        self.game.deal_card(self.game.player_hand)
+        self.game.status = "hand_over"
+        await handle_hand_end(self.game)
 
-        await modify_coin_adjustment(interaction.user.id, -p_data["bet"])
-        p_data["bet"] *= 2
-        p_data["hand"].append(table["shoe"].pop())
-        p_data["status"] = "busted" if calculate_hand_value(p_data["hand"]) > 21 else "stood"
+    @discord.ui.button(label="Surrender", style=discord.ButtonStyle.gray, custom_id="bj_surrender")
+    async def surrender(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        if len(self.game.player_hand) != 2:
+            await interaction.followup.send("You can only surrender on your first move.", ephemeral=True)
+            return
 
-        await _update_game_embed(self.logical_name)
-        await asyncio.sleep(1.0)
-        await _next_player_turn(self.logical_name)
+        self.game.status = "hand_over"
 
-async def _kick_inactive_player_turn(logical_name: str, player_id: int):
-    """Waits 1 minute and kicks a player if it is still their turn."""
-    await asyncio.sleep(60) # Wait for 1 minute (was 120)
+        refund = self.game.bet // 2
+        net_change = refund - self.game.bet
 
-    table = active_blackjack_tables.get(logical_name)
-    if not table or table.get("status") != "player_turns" or table.get("current_player_id") != player_id:
-        # If game state has changed, the timer is irrelevant.
-        return
+        await modify_coin_adjustment(self.game.player.id, refund)
 
-    player_data = table["players"].get(player_id)
-    if player_data and player_data.get("member"):
-        print(f"[BJ INFO] Kicking inactive player {player_id} from '{logical_name}' during their turn.")
-        channel = bot.get_channel(table.get("channel_id"))
-        if channel:
-            # Send the alert message to the channel
-            await channel.send(f"**{player_data['member'].display_name}** was removed for inactivity during their turn.", delete_after=20)
-        # Use the main leave handler to correctly kick them and advance the game
-        await _handle_player_leave(player_data["member"], logical_name)
+        self.game.session_winnings = refund
+        self.game.session_net += net_change
 
-class TableSelectionView(ui.View):
-    def __init__(self):
+        result_text = f"🏳️ You surrendered and got back {refund:,} coins."
+        # Pass the red color directly
+        embed = await create_game_embed(self.game, result_text, color=discord.Color.red())
+        await self.game.message.edit(embed=embed, view=PostHandView(self.game))
+
+
+class PostHandView(discord.ui.View):
+    """The view shown after a hand is over, with options to play again or quit."""
+
+    def __init__(self, game: BlackjackGame):
         super().__init__(timeout=180)
-        for logical_name in LOGICAL_TABLES:
-            button = ui.Button(label=f"Join {logical_name}", style=discord.ButtonStyle.secondary,
-                               custom_id=f"join_table_{logical_name}")
-            button.callback = self.join_table_callback
-            self.add_item(button)
+        self.game = game
+        self.play_again_same_bet.label = f"Play Again ({self.game.bet:,})"
 
-    async def join_table_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.game.player.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
 
-        logical_name = interaction.data["custom_id"].split("join_table_")[-1]
-        table_data = active_blackjack_tables.get(logical_name)
+    async def on_timeout(self):
+        # FIX: Now creates a proper summary embed on timeout
+        if self.game.player.id in active_blackjack_games:
+            del active_blackjack_games[self.game.player.id]
 
-        # --- PATH A: TABLE ALREADY EXISTS ---
-        if table_data:
-            channel_id = table_data.get("channel_id")
-            if not channel_id:
-                return await interaction.followup.send("Error: Table state is corrupt.", ephemeral=True)
+        # Call the new helper to create a clean end screen
+        final_embed = await create_final_summary_embed(self.game)
+        await self.game.message.edit(embed=final_embed, view=None)
 
-            player_count = len(table_data.get("players", {})) + len(table_data.get("waiting_to_join", []))
-            if player_count >= MAX_PLAYERS_PER_TABLE:
-                return await interaction.followup.send("This table is full.", ephemeral=True)
-            if interaction.user.id in table_data.get("players", {}) or any(
-                    m.id == interaction.user.id for m in table_data.get("waiting_to_join", [])):
-                return await interaction.followup.send("You are already at this table.", ephemeral=True)
+    @discord.ui.button(label="Play Again (Same Bet)", style=discord.ButtonStyle.green, custom_id="bj_play_again_same")
+    async def play_again_same_bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
 
-            target_channel = bot.get_channel(channel_id)
-            if not target_channel:
-                del active_blackjack_tables[logical_name]
-                return await interaction.followup.send(
-                    "Error: The game channel was not found and has been reset. Please try again.", ephemeral=True)
+        player_balance = await get_effective_balance(self.game.player.id)
 
-            await target_channel.set_permissions(interaction.user, read_messages=True, send_messages=True,
-                                                 read_message_history=True)
-            await interaction.followup.send(f"Joining {logical_name}! Click here: {target_channel.mention}",
-                                            ephemeral=True)
-            await _handle_player_join(interaction.user, logical_name)
+        if player_balance < self.game.bet:
+            embed = self.game.message.embeds[0]
+            embed.description = f"❌ You don't have enough coins to place your last bet of {self.game.bet:,}."
+            embed.color = discord.Color.dark_red()
+            await self.game.message.edit(embed=embed, view=None)
 
-        # --- PATH B: FIRST PLAYER, CREATE THE CHANNEL ---
+            if self.game.player.id in active_blackjack_games:
+                del active_blackjack_games[self.game.player.id]
+            return
+
+        await modify_coin_adjustment(self.game.player.id, -self.game.bet)
+        self.game.initial_deal()
+        self.game.status = "playing"
+        self.game.session_winnings = 0
+
+        player_value = calculate_hand_value(self.game.player_hand)
+
+        if player_value == 21:
+            self.game.status = "hand_over"
+            await handle_hand_end(self.game)
         else:
-            category = bot.get_channel(BLACKJACK_CATEGORY_ID)
-            if not category:
-                return await interaction.followup.send("CRITICAL ERROR: Blackjack category not found.", ephemeral=True)
+            embed = await create_game_embed(self.game)
+            view = ActionView(self.game, player_balance)
+            await self.game.message.edit(embed=embed, view=view)
 
-            channel_name = LOGICAL_TABLES[logical_name]["name"]
-            overwrites = {
-                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True,
-                                                                  manage_messages=True),
-                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True,
-                                                              read_message_history=True)
-            }
+    @discord.ui.button(label="Play Again (New Bet)", style=discord.ButtonStyle.primary, custom_id="bj_play_again_new")
+    async def play_again_new_bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(NewBetModal(self.game))
 
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.red, custom_id="bj_quit")
+    async def quit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+        # FIX: Now creates a proper summary embed on quit
+        if self.game.player.id in active_blackjack_games:
+            del active_blackjack_games[self.game.player.id]
+
+        # Call the new helper to create a clean end screen
+        final_embed = await create_final_summary_embed(self.game)
+        await self.game.message.edit(embed=final_embed, view=None)
+
+
+class NewBetModal(discord.ui.Modal, title="Place a New Bet"):
+    """A modal to get a new bet amount from the player."""
+
+    def __init__(self, game: BlackjackGame):
+        super().__init__()
+        self.game = game
+        self.new_bet_amount = discord.ui.TextInput(
+            label="Enter your new bet amount",
+            placeholder="e.g., 1000 or all",
+            required=True
+        )
+        self.add_item(self.new_bet_amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        player_balance = await get_effective_balance(self.game.player.id)
+        bet_str = self.new_bet_amount.value.lower().strip()
+        new_bet = 0
+
+        if bet_str == 'all':
+            new_bet = player_balance
+        else:
             try:
-                new_channel = await category.create_text_channel(name=channel_name, overwrites=overwrites,
-                                                                 reason=f"Blackjack table '{logical_name}' created.")
-            except discord.Forbidden:
-                return await interaction.followup.send("CRITICAL ERROR: The bot lacks 'Manage Channels' permission.",
-                                                       ephemeral=True)
+                new_bet = int(bet_str)
+            except ValueError:
+                await interaction.followup.send("Invalid bet amount. Please enter a number or 'all'.", ephemeral=True)
+                return
 
-            active_blackjack_tables[logical_name] = {
-                "channel_id": new_channel.id,  # Store the new channel ID
-                "shoe": create_shoe(2),
-                "status": "waiting_for_bets",
-                "players": {},  # Will be populated by _handle_player_join
-                "dealer_hand": [],
-                "game_message": None,
-                "current_player_id": None,
-                "waiting_to_join": [],
-            }
+        if new_bet <= 0:
+            await interaction.followup.send("Your bet must be a positive amount.", ephemeral=True)
+            return
 
-            # Now that the state exists, formally join the player
-            await _handle_player_join(interaction.user, logical_name)
-
-            # Initialize the embed in the new channel
-            await _initialize_table(logical_name)
+        if player_balance < new_bet:
             await interaction.followup.send(
-                f"You have created {logical_name}! Click here to play: {new_channel.mention}", ephemeral=True)
+                f"You don't have enough coins for that bet! Your balance is {player_balance:,}.", ephemeral=True)
+            return
+
+        self.game.bet = new_bet
+
+        # FIX: The deduction now correctly uses the 'new_bet' variable.
+        await modify_coin_adjustment(self.game.player.id, -new_bet)
+
+        self.game.initial_deal()
+        self.game.status = "playing"
+        self.game.session_winnings = 0
+
+        player_value = calculate_hand_value(self.game.player_hand)
+
+        if player_value == 21:
+            self.game.status = "hand_over"
+            await handle_hand_end(self.game)
+        else:
+            embed = await create_game_embed(self.game)
+            view = ActionView(self.game, player_balance)
+            await self.game.message.edit(embed=embed, view=view)
 
 
-# --- BLOCK 5: COMMAND AND ON_READY HOOK ---
-# (This block comes last)
+async def create_final_summary_embed(game: BlackjackGame):
+    """Creates a clean, final summary embed when a game session ends."""
+
+    # Get the absolute final balance
+    final_balance = await get_effective_balance(game.player.id)
+
+    # Create a new, clean embed
+    embed = discord.Embed(
+        title="Blackjack Session Over",
+        description="Thanks for playing! Here is your final summary.",
+        color=discord.Color.dark_grey()
+    )
+    embed.set_author(name=f"{game.player.display_name}'s Table", icon_url=game.player.display_avatar.url)
+
+    # Add ONLY the relevant final stats
+    stats_text = (
+        f"<:wbcoin:1398780929664745652> **Final Balance:** {final_balance:,}\n"
+        f"📈 **Total Session Net:** {game.session_net:+,}"
+    )
+    embed.add_field(name="Final Stats", value=stats_text, inline=False)
+
+    # No footer, no hands, no shoe status.
+    return embed
+
+
+async def handle_hand_end(game: BlackjackGame, custom_result_text=None):
+    """Handles the logic at the end of a hand: dealer's turn, calculating results, and updating the message."""
+
+    while calculate_hand_value(game.dealer_hand) < 17:
+        game.deal_card(game.dealer_hand)
+
+    player_value = calculate_hand_value(game.player_hand)
+    dealer_value = calculate_hand_value(game.dealer_hand)
+
+    winnings = 0
+    result_text = ""
+    final_color = discord.Color.red()
+
+    is_player_bj = player_value == 21 and len(game.player_hand) == 2
+    is_dealer_bj = dealer_value == 21 and len(game.dealer_hand) == 2
+
+    if player_value > 21:
+        result_text = f"❌ You busted with {player_value}!"
+        winnings = 0
+        final_color = discord.Color.red()
+    elif is_player_bj and not is_dealer_bj:
+        result_text = f"🎉 BLACKJACK! You win!"
+        winnings = int(game.bet * 2.5)
+        final_color = discord.Color.green()
+    elif is_player_bj and is_dealer_bj:
+        result_text = f"➖ It's a push! Both have Blackjack."
+        winnings = game.bet
+        final_color = discord.Color.light_grey()
+    elif dealer_value > 21:
+        result_text = f"✅ Dealer busted with {dealer_value}! You win."
+        winnings = game.bet * 2
+        final_color = discord.Color.green()
+    elif dealer_value > player_value:
+        result_text = f"😭 Dealer wins with {dealer_value}."
+        winnings = 0
+        final_color = discord.Color.red()
+
+    # --- THIS IS THE FIX ---
+    # The line was comparing player_value to itself. It is now correctly comparing to dealer_value.
+    elif player_value > dealer_value:
+        result_text = f"✅ You win with {player_value}!"
+        winnings = game.bet * 2
+        final_color = discord.Color.green()
+    # --- END OF FIX ---
+
+    else:  # Push
+        result_text = f"➖ It's a push with {player_value}."
+        winnings = game.bet
+        final_color = discord.Color.light_grey()
+
+    await modify_coin_adjustment(game.player.id, winnings)
+
+    net_change_for_session = winnings - game.bet
+
+    game.session_winnings = winnings
+    game.session_net += net_change_for_session
+
+    final_text = custom_result_text if custom_result_text else result_text
+
+    embed = await create_game_embed(game, final_text, color=final_color)
+    await game.message.edit(embed=embed, view=PostHandView(game))
 
 @bot.command(name="bj", aliases=["blackjack"])
-async def blackjack_tables(ctx: commands.Context):
-    """Shows the available Blackjack tables and allows joining."""
-    embed = discord.Embed(
-        title="Official Blackjack Tables",
-        description="Choose a table to join. An empty table will create a new private game channel.",
-        color=discord.Color.gold()
-    )
+async def blackjack(ctx, amount: str):
+    """
+    Play a game of Blackjack against the dealer.
+    Usage: !bj <amount> or !bj <all>
+    """
+    player = ctx.author
 
-    for logical_name in LOGICAL_TABLES:
-        table_data = active_blackjack_tables.get(logical_name)
-        player_list = "Empty"
-        player_count = 0
-        if table_data:
-            players = table_data.get("players", {})
-            waiting = table_data.get("waiting_to_join", [])
-            player_count = len(players) + len(waiting)
-            player_names = [p["member"].display_name for p in players.values()]
-            player_names.extend([m.display_name for m in waiting])
-            if player_names:
-                player_list = ", ".join(player_names)
+    if player.id in active_blackjack_games:
+        await ctx.send("You already have a Blackjack game in progress!", ephemeral=True)
+        return
 
-        embed.add_field(
-            name=f"🎲 {logical_name} ({player_count}/{MAX_PLAYERS_PER_TABLE})", # MAX_PLAYERS_PER_TABLE can be a global int
-            value=f"`{player_list}`",
-            inline=False
-        )
+    player_balance = await get_effective_balance(player.id)
+    bet_amount = 0
 
-    await ctx.send(embed=embed, view=TableSelectionView())
+    if amount.lower() == 'all':
+        bet_amount = player_balance
+    else:
+        try:
+            bet_amount = int(amount)
+        except ValueError:
+            await ctx.send("Please provide a valid number or 'all' for your bet.", ephemeral=True)
+            return
+
+    if bet_amount <= 0:
+        await ctx.send("Your bet must be a positive amount.", ephemeral=True)
+        return
+
+    if player_balance < bet_amount:
+        await ctx.send(
+            f"You don't have enough coins! Your balance is {player_balance:,} <:wbcoin:1398780929664745652>.",
+            ephemeral=True)
+        return
+
+    game = BlackjackGame(player, bet_amount)
+    active_blackjack_games[player.id] = game
+    await modify_coin_adjustment(player.id, -bet_amount)
+    game.initial_deal()
+
+    embed = await create_game_embed(game)
+
+    # FIX: Pass the player_balance to the initial ActionView
+    # The balance for the Double Down check is the balance *before* this hand's bet.
+    view = ActionView(game, player_balance)
+
+    game_message = await ctx.send(embed=embed, view=view)
+    game.message = game_message
+
+    player_value = calculate_hand_value(game.player_hand)
+    if player_value == 21:
+        game.status = "hand_over"
+        await handle_hand_end(game)
 
 # Balance
 @bot.command(name="bal", aliases=["balance", "wallet"])
@@ -2456,16 +2172,16 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
 
     # --- 3. Build the Final Futuristic Embed ---
     final_embed = discord.Embed(
-        title="<:wbcoin:1398780929664745652> DIGITAL ASSET PROFILE",
+        title="<:wbcoin:1398780929664745652> BANK PROFILE",
         color=0x00FFFF # A bright, neon "cyberpunk" color
     )
 
     # Use the target's avatar and name in the author field for personalization.
-    final_embed.set_author(name=f"IDENTITY SCAN: {target_user.display_name}", icon_url=target_user.display_avatar.url)
+    final_embed.set_author(name=f"{target_user.display_name}'s Balance Information", icon_url=target_user.display_avatar.url)
 
     # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
     final_embed.add_field(
-        name="[ ASSET ANALYSIS ]",
+        name="EARNINGS:",
         value=f"> Stat-Based Earnings: `{stats_balance:,}`\n"
               f"> Gambling Net Profit/Loss: `{gambling_adjustment:,}`",
         inline=False
@@ -2473,7 +2189,7 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
 
     # The main event: the total balance, formatted to stand out.
     final_embed.add_field(
-        name="[ CURRENT HOLDINGS ]",
+        name="CURRENT BALANCE:",
         value=f"<:wbcoin:1398780929664745652> `{total_balance:,}`", # "##" makes the text larger
         inline=False
     )
