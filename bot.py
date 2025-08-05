@@ -1784,34 +1784,22 @@ async def create_game_embed(game: BlackjackGame, result_text=None, color=discord
 class ActionView(discord.ui.View):
     """The view with buttons for Hit, Stand, Double Down, and Surrender."""
 
-    # MODIFICATION: Added 'player_balance' to the constructor
     def __init__(self, game: BlackjackGame, player_balance: int):
-        super().__init__(timeout=120)
+        # FIX: Timeout is removed, making the view persistent.
+        super().__init__(timeout=None)
         self.game = game
 
-        # FIX: Use the passed-in balance directly. No more asyncio.run()
         if len(self.game.player_hand) != 2 or player_balance < self.game.bet:
             self.double_down.disabled = True
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # This check is now even more important to ensure the right player is interacting.
         if interaction.user.id != self.game.player.id:
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
         return True
 
-    async def on_timeout(self):
-        if self.game.player.id in active_blackjack_games:
-            # Stand the player automatically if they are still in a game
-            if self.game.status == "playing":
-                await handle_hand_end(self.game, "You took too long to act and your hand was stood automatically.")
-            # Otherwise, just clean up
-            else:
-                del active_blackjack_games[self.game.player.id]
-                embed = self.game.message.embeds[0]
-                embed.description = "Game ended due to inactivity."
-                await self.game.message.edit(embed=embed, view=None)
-
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, custom_id="bj_hit")
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, custom_id="bj_hit")
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.game.deal_card(self.game.player_hand)
@@ -1821,33 +1809,27 @@ class ActionView(discord.ui.View):
             self.game.status = "hand_over"
             await handle_hand_end(self.game)
         else:
-            # Update embed, disable Double Down button after hitting
             self.double_down.disabled = True
-            player_balance = await get_effective_balance(
-                self.game.player.id)  # We need the current balance to update the view
             embed = await create_game_embed(self.game)
-            # We must pass the balance to the new view instance
             await self.game.message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.primary, custom_id="bj_stand")
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.gray, custom_id="bj_stand")
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.game.status = "hand_over"
         await handle_hand_end(self.game)
 
-    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.primary, custom_id="bj_double")
+    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.blurple, custom_id="bj_double")
     async def double_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        # Double the bet
         await modify_coin_adjustment(self.game.player.id, -self.game.bet)
         self.game.bet *= 2
 
-        # Deal one final card
         self.game.deal_card(self.game.player_hand)
         self.game.status = "hand_over"
         await handle_hand_end(self.game)
 
-    @discord.ui.button(label="Surrender", style=discord.ButtonStyle.gray, custom_id="bj_surrender")
+    @discord.ui.button(label="Surrender", style=discord.ButtonStyle.red, custom_id="bj_surrender")
     async def surrender(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         if len(self.game.player_hand) != 2:
@@ -1857,15 +1839,13 @@ class ActionView(discord.ui.View):
         self.game.status = "hand_over"
 
         refund = self.game.bet // 2
-        net_change = refund - self.game.bet
-
         await modify_coin_adjustment(self.game.player.id, refund)
 
+        net_change = refund - self.game.bet
         self.game.session_winnings = refund
         self.game.session_net += net_change
 
         result_text = f"🏳️ You surrendered and got back {refund:,} coins."
-        # Pass the red color directly
         embed = await create_game_embed(self.game, result_text, color=discord.Color.red())
         await self.game.message.edit(embed=embed, view=PostHandView(self.game))
 
@@ -1874,7 +1854,8 @@ class PostHandView(discord.ui.View):
     """The view shown after a hand is over, with options to play again or quit."""
 
     def __init__(self, game: BlackjackGame):
-        super().__init__(timeout=180)
+        # FIX: Timeout is removed.
+        super().__init__(timeout=None)
         self.game = game
         self.play_again_same_bet.label = f"Play Again ({self.game.bet:,})"
 
@@ -1884,38 +1865,27 @@ class PostHandView(discord.ui.View):
             return False
         return True
 
-    async def on_timeout(self):
-        # FIX: Now creates a proper summary embed on timeout
-        if self.game.player.id in active_blackjack_games:
-            del active_blackjack_games[self.game.player.id]
-
-        # Call the new helper to create a clean end screen
-        final_embed = await create_final_summary_embed(self.game)
-        await self.game.message.edit(embed=final_embed, view=None)
+    # REMOVED: The on_timeout method is no longer needed.
+    # async def on_timeout(self): ...
 
     @discord.ui.button(label="Play Again (Same Bet)", style=discord.ButtonStyle.green, custom_id="bj_play_again_same")
     async def play_again_same_bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ... (this button's logic does not need to change) ...
         await interaction.response.defer()
-
         player_balance = await get_effective_balance(self.game.player.id)
-
         if player_balance < self.game.bet:
             embed = self.game.message.embeds[0]
             embed.description = f"❌ You don't have enough coins to place your last bet of {self.game.bet:,}."
             embed.color = discord.Color.dark_red()
             await self.game.message.edit(embed=embed, view=None)
-
-            if self.game.player.id in active_blackjack_games:
-                del active_blackjack_games[self.game.player.id]
+            if interaction.message.id in active_blackjack_games:
+                del active_blackjack_games[interaction.message.id]
             return
-
         await modify_coin_adjustment(self.game.player.id, -self.game.bet)
         self.game.initial_deal()
         self.game.status = "playing"
         self.game.session_winnings = 0
-
         player_value = calculate_hand_value(self.game.player_hand)
-
         if player_value == 21:
             self.game.status = "hand_over"
             await handle_hand_end(self.game)
@@ -1932,11 +1902,10 @@ class PostHandView(discord.ui.View):
     async def quit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
 
-        # FIX: Now creates a proper summary embed on quit
-        if self.game.player.id in active_blackjack_games:
-            del active_blackjack_games[self.game.player.id]
+        # FIX: The game is now removed from the active dictionary using its message ID.
+        if interaction.message.id in active_blackjack_games:
+            del active_blackjack_games[interaction.message.id]
 
-        # Call the new helper to create a clean end screen
         final_embed = await create_final_summary_embed(self.game)
         await self.game.message.edit(embed=final_embed, view=None)
 
@@ -2094,9 +2063,10 @@ async def blackjack(ctx, amount: str):
     """
     player = ctx.author
 
-    if player.id in active_blackjack_games:
-        await ctx.send("You already have a Blackjack game in progress!", ephemeral=True)
-        return
+    # REMOVED: The check for an existing game is now gone.
+    # if player.id in active_blackjack_games:
+    #     await ctx.send("You already have a Blackjack game in progress!", ephemeral=True)
+    #     return
 
     player_balance = await get_effective_balance(player.id)
     bet_amount = 0
@@ -2121,18 +2091,18 @@ async def blackjack(ctx, amount: str):
         return
 
     game = BlackjackGame(player, bet_amount)
-    active_blackjack_games[player.id] = game
+
     await modify_coin_adjustment(player.id, -bet_amount)
     game.initial_deal()
 
-    embed = await create_game_embed(game)
+    embed = await create_game_embed(game, "Your turn! What's your move?")
 
-    # FIX: Pass the player_balance to the initial ActionView
-    # The balance for the Double Down check is the balance *before* this hand's bet.
     view = ActionView(game, player_balance)
-
     game_message = await ctx.send(embed=embed, view=view)
     game.message = game_message
+
+    # FIX: The game is now stored using its unique message ID as the key.
+    active_blackjack_games[game_message.id] = game
 
     player_value = calculate_hand_value(game.player_hand)
     if player_value == 21:
