@@ -2752,6 +2752,95 @@ async def removestats_error(ctx, error):
     else:
         print(f"An unhandled error occurred in the removestats command: {error}")
 
+@bot.command(name="addstats", aliases=["addpoints"])
+async def addstats(ctx: commands.Context, member: discord.Member, category: str, amount: int):
+    """
+    Adds a specified amount of points to a user in a specific category. (Admin Only)
+
+    Valid Categories: messages, bugs, ideas, voice
+    This command does NOT affect coins or trivia. Use !addcoins for coin changes.
+    """
+    # --- 1. Input Validation ---
+    category = category.lower()
+    if member.bot:
+        return await ctx.send("❌ You cannot modify stats for a bot.")
+    if amount <= 0:
+        return await ctx.send("❌ The amount to add must be a positive number.")
+
+    ALLOWED_USER_ID = 849827666064048178  # Make sure this is your correct admin ID
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this powerful command.")
+
+    # --- 2. Map Category to Database Table and Column ---
+    table_map = {
+        "messages": ("messages", "count"),
+        "bugs": ("bug_points", "count"),
+        "ideas": ("idea_points", "count"),
+        "voice": ("voice_time", "seconds")
+    }
+
+    if category not in table_map:
+        valid_cats = ", ".join(table_map.keys())
+        await ctx.send(f"❌ Invalid category. Please use one of the following: `{valid_cats}`")
+        return
+
+    table_name, column_name = table_map[category]
+
+    # --- 3. Database Interaction ---
+    try:
+        async with aiosqlite.connect("server_data.db") as db:
+            # First, get the user's current score for the 'before' part of the confirmation
+            cursor = await db.execute(f"SELECT {column_name} FROM {table_name} WHERE user_id = ?", (member.id,))
+            row = await cursor.fetchone()
+            current_score = row[0] if row else 0
+
+            # This single, robust query will add points for an existing user
+            # OR create the user with the specified points if they don't exist.
+            await db.execute(f"""
+                INSERT INTO {table_name} (user_id, {column_name}) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET {column_name} = {column_name} + excluded.{column_name}
+            """, (member.id, amount))
+            await db.commit()
+
+            # Get the new score for confirmation
+            cursor = await db.execute(f"SELECT {column_name} FROM {table_name} WHERE user_id = ?", (member.id,))
+            new_score = (await cursor.fetchone())[0]
+
+    except Exception as e:
+        await ctx.send(f"❌ An unexpected database error occurred: {e}")
+        print(f"[ERROR] An exception occurred during the addstats command: {e}")
+        return
+
+    # --- 4. Confirmation Embed ---
+    unit = "seconds" if category == "voice" else "points"
+    embed = discord.Embed(
+        title="✅ Admin Action: Stats Added",
+        description=f"Successfully added points to **{member.display_name}**.",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+    embed.add_field(name="Target User", value=member.mention, inline=False)
+    embed.add_field(name="Category", value=f"`{category.capitalize()}`", inline=True)
+    embed.add_field(name="Amount Added", value=f"`{amount:,} {unit}`", inline=True)
+    embed.add_field(name="Score Update", value=f"`{current_score:,}` ➡️ `{new_score:,}`", inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@addstats.error
+async def addstats_error(ctx, error):
+    """Handles errors for the addstats command."""
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You do not have the required `Administrator` permission to use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(
+            "❌ Incorrect usage. You need to specify a member, a category, and an amount.\n**Example:** `!addstats @User messages 100`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Couldn't find that member or the amount provided was not a valid whole number.")
+    else:
+        print(f"An unhandled error occurred in the addstats command: {error}")
+
 
 # @bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
 # async def delete_channel(ctx: commands.Context, channel_id: int):
