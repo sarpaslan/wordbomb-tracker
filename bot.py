@@ -1691,39 +1691,41 @@ async def get_effective_balance(user_id: int) -> int:
 async def coinflip(ctx: commands.Context, amount_str: str):
     """
     Gamble your coins based on your total leaderboard stats.
-    Usage: !cf <amount> OR !cf all
+    Usage: !cf <amount> OR !cf all (no max bet)
     """
     author = ctx.author
-    MAX_BET = 100000
+    MAX_BET = 100000 # The max bet for NUMERICAL bets only
 
     if author.id in active_coinflips:
         return await ctx.send("You already have a coinflip in progress! Please wait for it to finish.", ephemeral=True)
 
-    # --- NEW: PARSE THE BET AMOUNT ---
+    # --- UPDATED: PARSE AND VALIDATE THE BET AMOUNT ---
     current_balance = await get_effective_balance(author.id)
     amount = 0
+    is_all_in = False # This flag will determine if we check the MAX_BET
 
     if amount_str.lower() == 'all':
         amount = current_balance
+        is_all_in = True # Set the flag to true for an "all in" bet
     else:
         try:
             amount = int(amount_str)
         except ValueError:
             return await ctx.send(f"❌ Invalid bet. Please enter a whole number or 'all'.")
-    # --- END OF NEW LOGIC ---
 
-
-    # --- VALIDATION LOGIC ---
+    # --- UPDATED VALIDATION LOGIC ---
     if amount <= 0:
-        await ctx.send("❌ Please enter a positive amount of coins to bet.", ephemeral=True)
+        # For 'all in', if a user has 0 coins, they can't bet. This check handles that.
+        await ctx.send("❌ Your bet must be a positive amount.", ephemeral=True)
         return
 
-    # Check the max bet limit
-    if amount > MAX_BET:
-        await ctx.send(f"❌ The maximum bet is **{MAX_BET:,}** <:wbcoin:1398780929664745652>!", ephemeral=True)
+    # Check the max bet limit, BUT ONLY if it's NOT an "all in" bet.
+    if not is_all_in and amount > MAX_BET:
+        await ctx.send(f"❌ The maximum bet is **{MAX_BET:,}** <:wbcoin:1398780929664745652>! Use `!cf all` to bet more.", ephemeral=True)
         return
 
-    # Final check to ensure the user has enough coins
+    # Final check to ensure the user has enough coins.
+    # This is slightly redundant for '!cf all' but acts as a crucial safety net against race conditions.
     if current_balance < amount:
         return await ctx.send(f"❌ You don't have enough coins! You only have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
 
