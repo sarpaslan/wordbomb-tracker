@@ -855,65 +855,53 @@ async def get_coins_leaderboard_data() -> list:
     leaderboard_entries.sort(key=lambda item: item[1], reverse=True)
     return leaderboard_entries
 
-class LeaderboardView(discord.ui.View):
-    def __init__(self, author_id, current_category, page, total_pages, entries):
+class LeaderboardSelectMenu(discord.ui.Select):
+    """The dropdown menu component for selecting a leaderboard."""
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Messages", value="messages", description="Top chatters in the server.", emoji="💬"),
+            discord.SelectOption(label="Trivia", value="trivia", description="Most approved trivia questions.", emoji="❓"),
+            discord.SelectOption(label="Coins", value="coins", description="Richest users by total activity.", emoji="<:wbcoin:1398780929664745652>"),
+            discord.SelectOption(label="Bugs", value="bugs", description="Top bug finders.", emoji="🐞"),
+            discord.SelectOption(label="Ideas", value="ideas", description="Most approved ideas.", emoji="💡"),
+            discord.SelectOption(label="Voice", value="voice", description="Most time spent in voice channels.", emoji="🎤"),
+        ]
+        super().__init__(placeholder="Choose a leaderboard category...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        # When a user selects an option, 'self.values[0]' will be the category name (e.g., "messages").
+        # We then call the same update_leaderboard function as before.
+        # 'interaction.view.author_id' gets the author's ID from the parent view.
+        author_id = self.view.author_id
+        selected_category = self.values[0]
+        await update_leaderboard(interaction, selected_category, 1, author_id)
+
+class CompactLeaderboardView(discord.ui.View):
+    """The new, cleaner view with a dropdown and a single button."""
+    def __init__(self, author_id: int):
         super().__init__(timeout=60)
         self.author_id = author_id
-        self.current_category = current_category
-        self.page = page
-        self.total_pages = total_pages
-        self.entries = entries
 
-        # --- THIS IS THE NEW ADDITION ---
-        # 1. Construct the unique URL for the user who ran the command.
+        # Add the dropdown menu to the view
+        self.add_item(LeaderboardSelectMenu())
+
+        # Add the web profile button on the next row
         profile_url = f"https://discord.wordbomb.io/user/{self.author_id}"
-
-        # 2. Create a special "link" button.
-        #    - style=discord.ButtonStyle.link is required for URL buttons.
-        #    - We provide a 'url' instead of a 'custom_id'.
-        #    - We put it on row=1 to place it below the category buttons.
         profile_button = discord.ui.Button(
             label="View Web Profile",
             style=discord.ButtonStyle.link,
             url=profile_url,
-            emoji="🌐",  # A nice globe emoji for a web link
-            row=1
+            emoji="🌐",
+            row=1  # This places the button on the row below the dropdown
         )
-
-        # 3. Add the new button to the view.
         self.add_item(profile_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Ensures only the original command author can use the dropdown."""
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("These buttons aren't for you!", ephemeral=True)
+            await interaction.response.send_message("This menu isn't for you!", ephemeral=True)
             return False
         return True
-
-    # All of your existing category buttons remain exactly the same.
-    # The 'row=0' parameter is implicitly set for decorated buttons.
-    @discord.ui.button(label="Messages", style=discord.ButtonStyle.primary, custom_id="category_messages")
-    async def messages_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "messages", 1, self.author_id)
-
-    @discord.ui.button(label="Trivia", style=discord.ButtonStyle.primary, custom_id="category_trivias")
-    async def trivia_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "trivia", 1, self.author_id)
-
-    @discord.ui.button(label="Coins", style=discord.ButtonStyle.primary, custom_id="category_coins")
-    async def coins_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "coins", 1, self.author_id)
-
-    @discord.ui.button(label="Bugs", style=discord.ButtonStyle.primary, custom_id="category_bugs")
-    async def bugs_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "bugs", 1, self.author_id)
-
-    @discord.ui.button(label="Ideas", style=discord.ButtonStyle.primary, custom_id="category_ideas")
-    async def ideas_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "ideas", 1, self.author_id)
-
-    @discord.ui.button(label="Voice", style=discord.ButtonStyle.primary, custom_id="category_voice")
-    async def voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await update_leaderboard(interaction, "voice", 1, self.author_id)
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table_map = {
@@ -1016,7 +1004,7 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     if footer_text:
         embed.set_footer(text=footer_text)
 
-    view = LeaderboardView(author_id, category, 1, 1, full_rows)
+    view = CompactLeaderboardView(author_id)
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.edit_message(embed=embed, view=view)
     else:
