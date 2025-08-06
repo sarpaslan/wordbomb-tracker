@@ -879,7 +879,7 @@ class LeaderboardSelectMenu(discord.ui.Select):
 class CompactLeaderboardView(discord.ui.View):
     """The new, cleaner view with a dropdown and a single button."""
     def __init__(self, author_id: int):
-        super().__init__(timeout=60)
+        super().__init__(timeout=None)
         self.author_id = author_id
 
         # Add the dropdown menu to the view
