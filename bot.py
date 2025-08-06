@@ -530,15 +530,21 @@ async def on_raw_reaction_add(payload):
     if not channel: return
     try:
         reacted_message = await channel.fetch_message(payload.message_id)
-    except Exception:
+    except discord.NotFound:
         return
-    author = reacted_message.author
 
-    # Point-log editing (no changes needed here)
-    if payload.channel_id == 1392585590532341782 and str(payload.emoji.name) == "✅":
+    # Point-log editing (no changes needed here, remains the same)
+    if payload.channel_id == POINT_LOGS_CHANNEL.id and str(payload.emoji.name) == "✅":
         if payload.user_id not in DEVELOPER_IDS: return
         try:
             message_to_edit = await channel.fetch_message(payload.message_id)
+            if not message_to_edit.embeds: return  # Safety check
+
+            original_embed = message_to_edit.embeds[0]
+            new_embed = original_embed.copy()
+            new_embed.color = discord.Color.green()  # Change color to green
+
+            # This logic to change the text remains the same
             lines = message_to_edit.content.splitlines()
             if not lines: return
             first_line, rest_of_message = lines[0], "\n".join(lines[1:])
@@ -548,10 +554,11 @@ async def on_raw_reaction_add(payload):
             elif first_line.startswith("💡"):
                 new_first_line = f"🟢 Implemented Idea by {mention}"
             else:
-                new_first_line = "🟢 Handled"
-            await message_to_edit.edit(content=f"{new_first_line}\n{rest_of_message}")
-        except Exception:
-            pass
+                return  # Don't edit if it's not a recognized format
+
+            await message_to_edit.edit(content=new_first_line, embed=new_embed)
+        except Exception as e:
+            print(f"[ERROR] Failed to edit point log message: {e}")
         return
 
     # Bug / Idea system
@@ -560,62 +567,172 @@ async def on_raw_reaction_add(payload):
 
     expected_channel_id, pointed_table, points_table, role_name = emoji_channel_map[payload.emoji.name]
 
-    if payload.channel_id != expected_channel_id or author.bot: return
+    if payload.channel_id != expected_channel_id: return
 
-    # Database operations (no changes needed here)
+    # --- START: THE DEFINITIVE FORWARDED MESSAGE SOLUTION ---
+
+    author_to_credit = None
+    log_text = ""
+    log_image_url = None
+    is_forward = False
+
+    # METHOD 1: The "Jump to URL" Workaround (Most Reliable)
+    # This checks if the message has an embed with a valid "jump to message" URL.
+    if reacted_message.embeds and reacted_message.embeds[0].url and "/channels/" in reacted_message.embeds[0].url:
+        try:
+            jump_url = reacted_message.embeds[0].url
+            # Parse the URL: https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
+            url_parts = jump_url.split('/')
+            original_channel_id = int(url_parts[-2])
+            original_message_id = int(url_parts[-1])
+
+            # Fetch the original channel and message
+            source_channel = guild.get_channel(original_channel_id)
+            if source_channel:
+                original_message = await source_channel.fetch_message(original_message_id)
+
+                # We found it! Extract data directly and reliably from the original message.
+                author_to_credit = original_message.author
+                log_text = original_message.content
+                if original_message.attachments:
+                    log_image_url = original_message.attachments[0].url
+
+                is_forward = True  # Mark that we successfully handled this as a forward.
+        except (ValueError, IndexError, discord.NotFound, discord.Forbidden):
+            # This handles cases where the URL isn't a valid message link, the message was deleted,
+            # or the bot doesn't have permissions to see the original channel.
+            # We will let the code fall through to the less reliable methods.
+            is_forward = False
+
+    # This block runs for REGULAR messages OR if the URL method failed.
+    if not is_forward:
+        # METHOD 2: Regular Message with Attachments/Text
+        if not reacted_message.embeds:
+            author_to_credit = reacted_message.author
+            # Your existing snapshot function is perfect for this.
+            snapshot_data = await _fetch_message_snapshot(channel, reacted_message)
+            log_text = snapshot_data['text']  # The function already formats this with "> "
+            log_image_url = snapshot_data['image_url']
+
+        # METHOD 3: Fallback for Failed Forwards or Other Embeds
+        # This handles cases where the URL method failed but there's still an embed.
+        else:
+            embed = reacted_message.embeds[0]
+            log_text = embed.description or ""
+            if embed.image and embed.image.url:
+                log_image_url = embed.image.url
+
+            # For author, prioritize a manual @mention by the forwarder.
+            if reacted_message.mentions and not reacted_message.mentions[0].bot:
+                author_to_credit = reacted_message.mentions[0]
+            else:
+                # If no mention, credit the person who posted the forward.
+                # This is more reliable than searching by name.
+                author_to_credit = reacted_message.author
+
+    # Final checks and formatting on the extracted content.
+    if isinstance(log_text, str) and log_text.strip() and not log_text.startswith(">"):
+        log_text = '\n'.join(f"> {line}" for line in log_text.splitlines())
+    elif not log_text and not log_image_url:
+        log_text = "> (No text content)"
+
+    # Final check: Don't give points to bots or if author detection failed.
+    if not author_to_credit or author_to_credit.bot:
+        return
+
+    # --- END: THE DEFINITIVE FORWARDED MESSAGE SOLUTION ---
+
+    # --- Database Operations (now uses the correct author and message ID) ---
     async with aiosqlite.connect("server_data.db") as db:
-        async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?", (payload.message_id,)) as cursor:
+        # Check if this specific reacted message already gave a point.
+        async with db.execute(f"SELECT 1 FROM {pointed_table} WHERE message_id = ?", (reacted_message.id,)) as cursor:
             if await cursor.fetchone():
-                print(f"[DEBUG] Message {payload.message_id} already gave a point. Skipping.")
                 return
-        await db.execute(f"INSERT INTO {pointed_table} (message_id) VALUES (?)", (payload.message_id,))
-        async with db.execute(f"SELECT count FROM {points_table} WHERE user_id = ?", (author.id,)) as cursor:
+        # If not, record it and award the point.
+        await db.execute(f"INSERT INTO {pointed_table} (message_id) VALUES (?)", (reacted_message.id,))
+        async with db.execute(f"SELECT count FROM {points_table} WHERE user_id = ?", (author_to_credit.id,)) as cursor:
             row = await cursor.fetchone()
         new_count = row[0] + 1 if row else 1
         if row:
-            await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author.id))
+            await db.execute(f"UPDATE {points_table} SET count = ? WHERE user_id = ?", (new_count, author_to_credit.id))
         else:
-            await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author.id, 1))
+            await db.execute(f"INSERT INTO {points_table} (user_id, count) VALUES (?, ?)", (author_to_credit.id, 1))
         await db.commit()
-    print(f"[DEBUG] {author} now has {new_count} points in {points_table}.")
 
-    # --- THIS IS THE NEW LOGGING LOGIC ---
-    # 1. Fetch the snapshot data (which is now a dictionary)
-    snapshot_data = await _fetch_message_snapshot(channel, reacted_message)
-
+    # --- Logging Logic (now uses the correctly sourced data) ---
     if POINT_LOGS_CHANNEL:
         log_title = ""
-        log_color = discord.Color.default()
         if payload.emoji.name == BUG_EMOJI:
-            log_title = f"🐞 **Bug Reported** by {author.mention}"
-            log_color = discord.Color.red()
+            log_title = f"🐞 Bug Reported by {author_to_credit.mention}"
         elif payload.emoji.name == IDEA_EMOJI:
-            log_title = f"💡 **Approved Idea** by {author.mention}"
-            log_color = discord.Color.green()
+            log_title = f"💡 Approved Idea by {author_to_credit.mention}"
 
-        # 2. Create an embed for the log message
         log_embed = discord.Embed(
-            description=f"{snapshot_data['text']}\n\n🔗 [Jump to Message]({reacted_message.jump_url})",
-            color=log_color
+            description=f"{log_text}\n\n🔗 [Jump to Message]({reacted_message.jump_url})",
+            color=discord.Color.red()  # <-- ALWAYS RED
         )
-
-        # 3. If an image URL was found, add it to the embed
-        if snapshot_data['image_url']:
-            log_embed.set_image(url=snapshot_data['image_url'])
-
-        # 4. Send the log with the title in the content and the details in the embed
+        if log_image_url:
+            log_embed.set_image(url=log_image_url)
         await POINT_LOGS_CHANNEL.send(content=log_title, embed=log_embed)
 
-    # Handle role assignment (no changes needed here)
+    # --- Role Assignment ---
     if new_count >= POINT_THRESHOLD:
         role = discord.utils.get(guild.roles, name=role_name)
-        member = guild.get_member(author.id)
+        member = guild.get_member(author_to_credit.id)
         if role and member and role not in member.roles:
             try:
                 await member.add_roles(role)
-                print(f"[DEBUG] {member.name} was given the '{role.name}' role.")
             except discord.Forbidden:
                 print(f"[WARN] Bot doesn't have permission to assign the '{role.name}' role.")
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    """
+    Handles when a developer un-reacts with a ✅, reverting the log message
+    back to its original "In Progress" red state.
+    """
+    DEVELOPER_IDS = {265196052192165888, 849827666064048178}
+    POINT_LOGS_CHANNEL_ID = 1392585590532341782
+
+    # --- Validation: Only proceed if a dev removes a ✅ in the log channel ---
+    if payload.channel_id != POINT_LOGS_CHANNEL_ID: return
+    if str(payload.emoji.name) != "✅": return
+    if payload.user_id not in DEVELOPER_IDS: return
+
+    try:
+        guild = bot.get_guild(payload.guild_id)
+        if not guild: return
+        channel = guild.get_channel(payload.channel_id)
+        if not channel: return
+        message_to_edit = await channel.fetch_message(payload.message_id)
+
+        # Safety checks
+        if not message_to_edit.embeds: return
+        if not message_to_edit.mentions: return
+
+        # --- Revert the Embed and Content ---
+        original_embed = message_to_edit.embeds[0]
+        new_embed = original_embed.copy()
+        new_embed.color = discord.Color.red() # Change color back to red
+
+        # Determine the original message content based on the current content
+        current_content = message_to_edit.content
+        mention = message_to_edit.mentions[0].mention
+        new_content = ""
+
+        if current_content.startswith("🟢 Fixed Bug"):
+            new_content = f"🐞 Bug Reported by {mention}"
+        elif current_content.startswith("🟢 Implemented Idea"):
+            new_content = f"💡 Approved Idea by {mention}"
+        else:
+            return # Don't do anything if the format isn't recognized
+
+        # Edit the message back to its original state
+        await message_to_edit.edit(content=new_content, embed=new_embed)
+        print(f"[INFO] Reverted point log message {message_to_edit.id} back to 'In Progress' state.")
+
+    except Exception as e:
+        print(f"[ERROR] Failed to revert point log message on reaction remove: {e}")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
