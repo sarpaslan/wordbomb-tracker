@@ -28,43 +28,7 @@ WALLET_ENDPOINT = os.getenv("WORDBOMB_WALLET_ENDPOINT")
 # Ask Hector for this connection string and put it in your .env file
 MONGO_URI = os.getenv('MONGO_URI')
 # ID of the private channel where suggestions will be sent for approval
-APPROVAL_CHANNEL_ID = 1395207582985097276 # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
-
-
-active_coinflips = set()
-
-# --- BLACKJACK CONSTANTS AND STATE ---
-SUITS = ["♠️", "♥️", "♦️", "♣️"]
-RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11}
-
-# --- ROULETTE GAME CONSTANTS AND STATE ---
-
-# Represents the 38 pockets of an American Roulette wheel
-ROULETTE_POCKETS = {
-    0: "green", 1: "red", 2: "black", 3: "red", 4: "black", 5: "red",
-    6: "black", 7: "red", 8: "black", 9: "red", 10: "black", 11: "black",
-    12: "red", 13: "black", 14: "red", 15: "black", 16: "red", 17: "black",
-    18: "red", 19: "red", 20: "black", 21: "red", 22: "black", 23: "red",
-    24: "black", 25: "red", 26: "black", 27: "red", 28: "black", 29: "black",
-    30: "red", 31: "black", 32: "red", 33: "black", 34: "red", 35: "black",
-    36: "red", "00": "green"
-}
-# Define columns and dozens for betting
-COLUMN_1 = {1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34}
-COLUMN_2 = {2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35}
-COLUMN_3 = {3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36}
-DOZEN_1 = set(range(1, 13))
-DOZEN_2 = set(range(13, 25))
-DOZEN_3 = set(range(25, 37))
-
-# This dictionary will hold all active games, with the user's ID as the key.
-active_blackjack_games = {}
-active_baccarat_games = {}
-active_duels = {}
-active_roulette_games = {}
-
-MAX_PLAYERS_PER_TABLE = 5 # This logic can be handled differently or kept if you wish
-SHOE_RESHUFFLE_THRESHOLD = 0.25 # This is fine to keep
+APPROVAL_CHANNEL_ID = 1395207582985097276  # <--- ⚠️ CHANGE THIS TO YOUR LM'S PRIVATE CHANNEL ID
 
 # --- MongoDB Setup ---
 client = None
@@ -116,7 +80,7 @@ LANGUAGE_MOD_IDS = {
     448419862767730703,  # kisaragi (tl-TL), admin, legend false
     918908049194889236,  # ayberk (tr-TR), admin, legend false
     945440695924162690,  # finesse (ru), admin, legend false
-    #849827666064048178, #test
+    # 849827666064048178, #test
 }
 
 LANGUAGE_CHANNEL_IDS = {
@@ -133,7 +97,7 @@ LANGUAGE_CHANNEL_IDS = {
     1367131592505557012,  # sv-SE suggest words channel
     1371921886245818418,  # ru suggest words channel
     1390240204459085844,  # nl suggest words channel
-    #1392345870384762961, # test
+    # 1392345870384762961, # test
 }
 
 EXCLUDED_CHANNEL_IDS = {
@@ -151,12 +115,12 @@ EXCLUDED_CHANNEL_IDS = {
     1371885469373042750,  # ru search words channel
     1383399906378518558,  # nl search words channel
     1383399537661444146,  # finnish search words channel
-    1392393127700205680, # music commands channel
-    1328176869572612288, # normal commands channel
-    1349650156001431592, # what channel
+    1392393127700205680,  # music commands channel
+    1328176869572612288,  # normal commands channel
+    1349650156001431592,  # what channel
 }
-voice_states = {}
 
+voice_states = {}
 EXCLUDED_VC_IDS = {1390402088483422289, 1390454038142914720}
 
 last_message_times = {}
@@ -186,6 +150,39 @@ OTHER_BOTS_COMMANDS = {
 
 POINT_LOGS_CHANNEL = None
 rejected_questions_collection = None
+
+# --- BLACKJACK CONSTANTS AND STATE ---
+SUITS = ["♠️", "♥️", "♦️", "♣️"]
+RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10, "A": 11}
+
+# --- ROULETTE GAME CONSTANTS AND STATE ---
+
+# Represents the 38 pockets of an American Roulette wheel
+ROULETTE_POCKETS = {
+    0: "green", 1: "red", 2: "black", 3: "red", 4: "black", 5: "red",
+    6: "black", 7: "red", 8: "black", 9: "red", 10: "black", 11: "black",
+    12: "red", 13: "black", 14: "red", 15: "black", 16: "red", 17: "black",
+    18: "red", 19: "red", 20: "black", 21: "red", 22: "black", 23: "red",
+    24: "black", 25: "red", 26: "black", 27: "red", 28: "black", 29: "black",
+    30: "red", 31: "black", 32: "red", 33: "black", 34: "red", 35: "black",
+    36: "red", "00": "green"
+}
+# Define columns and dozens for betting
+DOZEN_1 = set(range(1, 13))
+DOZEN_2 = set(range(13, 25))
+DOZEN_3 = set(range(25, 37))
+
+# This dictionary will hold all active games, with the user's ID as the key.
+active_blackjack_games = {}
+active_baccarat_games = {}
+active_roulette_games = {}
+active_coinflips = set()
+
+MAX_PLAYERS_PER_TABLE = 5  # This logic can be handled differently or kept if you wish
+SHOE_RESHUFFLE_THRESHOLD = 0.25  # This is fine to keep
+
+BASE_DAILY_REWARD = 2500
+DAILY_STREAK_MULTIPLIER = 1.05
 
 # The channel where the "Create Ticket" button will be posted
 TICKET_SETUP_CHANNEL_ID = 1395899736032018592
@@ -276,6 +273,13 @@ async def on_ready():
                 adjustment_amount INTEGER NOT NULL DEFAULT 0
             )
         """)
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS daily_claims (
+                user_id INTEGER PRIMARY KEY,
+                last_claim_date TEXT NOT NULL,
+                streak INTEGER NOT NULL DEFAULT 1
+            )
+        """)
         await db_sqlite.commit()
 
     print("[INFO] Reconciling voice states on startup...")
@@ -320,6 +324,7 @@ async def on_ready():
 
     print("[SUCCESS] Bot is ready and persistent views are registered.")
 
+
 @tasks.loop(hours=1)
 async def update_weekly_snapshot():
     """
@@ -333,10 +338,11 @@ async def update_weekly_snapshot():
 
     async with aiosqlite.connect("server_data.db") as db:
         # Check if we have already processed this week
-        async with db.execute("SELECT 1 FROM weekly_leaderboard_snapshot WHERE week = ?", (previous_week_str,)) as cursor:
+        async with db.execute("SELECT 1 FROM weekly_leaderboard_snapshot WHERE week = ?",
+                              (previous_week_str,)) as cursor:
             if await cursor.fetchone():
                 # print(f"[DEBUG] Snapshot for week {previous_week_str} already exists.")
-                return # We've already done this week, do nothing.
+                return  # We've already done this week, do nothing.
 
         print(f"[INFO] Generating new leaderboard snapshot for week {previous_week_str}...")
 
@@ -359,7 +365,7 @@ async def update_weekly_snapshot():
             )
             SELECT user_id, rank, cumulative_messages FROM RankedTotals
         """
-        
+
         cursor = await db.execute(snapshot_query, (previous_week_str,))
         snapshot_data = await cursor.fetchall()
 
@@ -371,9 +377,11 @@ async def update_weekly_snapshot():
         await db.commit()
         print(f"[SUCCESS] Saved leaderboard snapshot for week {previous_week_str} with {len(snapshot_data)} users.")
 
+
 @update_weekly_snapshot.before_loop
 async def before_update_weekly_snapshot():
-    await bot.wait_until_ready() # Wait for the bot to be logged in before starting the loop
+    await bot.wait_until_ready()  # Wait for the bot to be logged in before starting the loop
+
 
 @bot.event
 async def on_message(message):
@@ -445,8 +453,9 @@ async def on_message(message):
                             print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
         else:
             pass
-    
+
     await bot.process_commands(message)
+
 
 async def assign_roles(member, count, guild):
     for threshold, role_name in MESSAGE_THRESHOLDS.items():
@@ -685,6 +694,7 @@ async def on_raw_reaction_add(payload):
             except discord.Forbidden:
                 print(f"[WARN] Bot doesn't have permission to assign the '{role.name}' role.")
 
+
 @bot.event
 async def on_raw_reaction_remove(payload):
     """
@@ -713,7 +723,7 @@ async def on_raw_reaction_remove(payload):
         # --- Revert the Embed and Content ---
         original_embed = message_to_edit.embeds[0]
         new_embed = original_embed.copy()
-        new_embed.color = discord.Color.red() # Change color back to red
+        new_embed.color = discord.Color.red()  # Change color back to red
 
         # Determine the original message content based on the current content
         current_content = message_to_edit.content
@@ -725,7 +735,7 @@ async def on_raw_reaction_remove(payload):
         elif current_content.startswith("🟢 Implemented Idea"):
             new_content = f"💡 Approved Idea by {mention}"
         else:
-            return # Don't do anything if the format isn't recognized
+            return  # Don't do anything if the format isn't recognized
 
         # Edit the message back to its original state
         await message_to_edit.edit(content=new_content, embed=new_embed)
@@ -733,6 +743,7 @@ async def on_raw_reaction_remove(payload):
 
     except Exception as e:
         print(f"[ERROR] Failed to revert point log message on reaction remove: {e}")
+
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -750,7 +761,8 @@ async def on_voice_state_update(member, before, after):
         if not after.channel or after.channel.id in EXCLUDED_VC_IDS:
             async with aiosqlite.connect("server_data.db") as db:
                 # 1. Find the user's active session to get their join time.
-                cursor = await db.execute("SELECT join_time_iso FROM active_voice_sessions WHERE user_id = ?", (member.id,))
+                cursor = await db.execute("SELECT join_time_iso FROM active_voice_sessions WHERE user_id = ?",
+                                          (member.id,))
                 session_row = await cursor.fetchone()
 
                 if session_row:
@@ -759,7 +771,7 @@ async def on_voice_state_update(member, before, after):
                     duration_seconds = int((now - join_time).total_seconds())
 
                     # 3. Log the completed session to our new permanent table.
-                    if duration_seconds > 5: # Only log sessions longer than 5 seconds
+                    if duration_seconds > 5:  # Only log sessions longer than 5 seconds
                         await db.execute("""
                             INSERT INTO voice_sessions (user_id, start_timestamp, end_timestamp, duration_seconds)
                             VALUES (?, ?, ?, ?)
@@ -784,15 +796,16 @@ async def on_voice_state_update(member, before, after):
                     await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
                     await db.commit()
 
-
     # --- HANDLING A USER JOINING A VOICE CHANNEL ---
     # This block runs if the user is in a valid channel after the update.
     if after.channel and after.channel.id not in EXCLUDED_VC_IDS:
         async with aiosqlite.connect("server_data.db") as db:
             # Create a new temporary session record with the current time.
             # "INSERT OR IGNORE" prevents errors if a session somehow already exists.
-            await db.execute("INSERT OR IGNORE INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)", (member.id, now.isoformat()))
+            await db.execute("INSERT OR IGNORE INTO active_voice_sessions (user_id, join_time_iso) VALUES (?, ?)",
+                             (member.id, now.isoformat()))
             await db.commit()
+
 
 async def get_coins_leaderboard_data() -> list:
     """
@@ -855,16 +868,22 @@ async def get_coins_leaderboard_data() -> list:
     leaderboard_entries.sort(key=lambda item: item[1], reverse=True)
     return leaderboard_entries
 
+
 class LeaderboardSelectMenu(discord.ui.Select):
     """The dropdown menu component for selecting a leaderboard."""
+
     def __init__(self):
         options = [
-            discord.SelectOption(label="Messages", value="messages", description="Top chatters in the server.", emoji="💬"),
-            discord.SelectOption(label="Trivia", value="trivia", description="Most approved trivia questions.", emoji="❓"),
-            discord.SelectOption(label="Coins", value="coins", description="Richest users by total activity.", emoji="<:wbcoin:1398780929664745652>"),
+            discord.SelectOption(label="Messages", value="messages", description="Top chatters in the server.",
+                                 emoji="💬"),
+            discord.SelectOption(label="Trivia", value="trivia", description="Most approved trivia questions.",
+                                 emoji="❓"),
+            discord.SelectOption(label="Coins", value="coins", description="Richest users by total activity.",
+                                 emoji="<:wbcoin:1398780929664745652>"),
             discord.SelectOption(label="Bugs", value="bugs", description="Top bug finders.", emoji="🐞"),
             discord.SelectOption(label="Ideas", value="ideas", description="Most approved ideas.", emoji="💡"),
-            discord.SelectOption(label="Voice", value="voice", description="Most time spent in voice channels.", emoji="🎤"),
+            discord.SelectOption(label="Voice", value="voice", description="Most time spent in voice channels.",
+                                 emoji="🎤"),
         ]
         super().__init__(placeholder="Choose a leaderboard category...", options=options)
 
@@ -876,8 +895,10 @@ class LeaderboardSelectMenu(discord.ui.Select):
         selected_category = self.values[0]
         await update_leaderboard(interaction, selected_category, 1, author_id)
 
+
 class CompactLeaderboardView(discord.ui.View):
     """The new, cleaner view with a dropdown and a single button."""
+
     def __init__(self, author_id: int):
         super().__init__(timeout=None)
         self.author_id = author_id
@@ -902,6 +923,7 @@ class CompactLeaderboardView(discord.ui.View):
             await interaction.response.send_message("This menu isn't for you!", ephemeral=True)
             return False
         return True
+
 
 async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     table_map = {
@@ -1010,13 +1032,14 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
     else:
         await ctx_or_interaction.send(embed=embed, view=view)
 
+
 @bot.command(name="l", aliases=["leaderboard", "leaderboards", "lb"])
 async def l(ctx, category: str = "messages"):
     await update_leaderboard(ctx, category.lower(), 1, ctx.author.id)
 
+
 @bot.command(name="help")
 async def show_help(ctx):
-
     embed = discord.Embed(
         title="📚 Server Commands Overview",
         description="Here are the commands from our Word Bomb bots in this server:",
@@ -1121,6 +1144,7 @@ async def give_error(ctx, error):
             "❌ Incorrect usage. You must specify a user and an amount.\n"
             "**Examples:**\n`!give @User 500`\n`!give 500 @User`"
         )
+
 
 # Trivia Game
 class QuestionSuggestionModal(Modal, title='Suggest a New Question'):
@@ -1315,6 +1339,7 @@ class QuestionEditModal(Modal, title='Edit Question Suggestion'):
         await interaction.response.send_message("✅ Suggestion has been updated!", ephemeral=True)
         await interaction.message.edit(embed=new_embed)
 
+
 class SuggestionStarterView(ui.View):
     def __init__(self):
         # timeout=None makes the button persistent
@@ -1337,7 +1362,6 @@ class SuggestionStarterView(ui.View):
 # ADD THIS NEW ADMIN COMMAND
 @bot.command(name="setup_suggestions")
 async def setup_suggestions(ctx):
-
     if ctx.author.id != 849827666064048178:  # Replace with your actual Discord user ID
         await ctx.send("You don't have permission to use this command.")
         return
@@ -1361,7 +1385,6 @@ async def setup_suggestions(ctx):
     # Send the message to the channel with the button view
     await target_channel.send(embed=embed, view=SuggestionStarterView())
     await ctx.send(f"✅ Suggestion button message has been sent to {target_channel.mention}.")
-
 
 
 class ApprovalView(ui.View):
@@ -1652,6 +1675,7 @@ async def calculate_total_coins_from_stats(user_id: int) -> int:
 
     return total_coins
 
+
 async def get_coin_adjustment(user_id: int) -> int:
     """Fetches the current win/loss adjustment for a user from the database."""
     async with aiosqlite.connect("server_data.db") as db:
@@ -1686,6 +1710,7 @@ async def get_effective_balance(user_id: int) -> int:
     adjustment = await get_coin_adjustment(user_id)
     return stats_balance + adjustment
 
+
 # Coinflip
 @bot.command(name="cf", aliases=["coinflip"])
 async def coinflip(ctx: commands.Context, amount_str: str):
@@ -1694,7 +1719,7 @@ async def coinflip(ctx: commands.Context, amount_str: str):
     Usage: !cf <amount> OR !cf all (no max bet)
     """
     author = ctx.author
-    MAX_BET = 100000 # The max bet for NUMERICAL bets only
+    MAX_BET = 100000  # The max bet for NUMERICAL bets only
 
     if author.id in active_coinflips:
         return await ctx.send("You already have a coinflip in progress! Please wait for it to finish.", ephemeral=True)
@@ -1702,11 +1727,11 @@ async def coinflip(ctx: commands.Context, amount_str: str):
     # --- UPDATED: PARSE AND VALIDATE THE BET AMOUNT ---
     current_balance = await get_effective_balance(author.id)
     amount = 0
-    is_all_in = False # This flag will determine if we check the MAX_BET
+    is_all_in = False  # This flag will determine if we check the MAX_BET
 
     if amount_str.lower() == 'all':
         amount = current_balance
-        is_all_in = True # Set the flag to true for an "all in" bet
+        is_all_in = True  # Set the flag to true for an "all in" bet
     else:
         try:
             amount = int(amount_str)
@@ -1721,14 +1746,17 @@ async def coinflip(ctx: commands.Context, amount_str: str):
 
     # Check the max bet limit, BUT ONLY if it's NOT an "all in" bet.
     if not is_all_in and amount > MAX_BET:
-        await ctx.send(f"❌ The maximum bet is **{MAX_BET:,}** <:wbcoin:1398780929664745652>! Use `!cf all` to bet more.", ephemeral=True)
+        await ctx.send(
+            f"❌ The maximum bet is **{MAX_BET:,}** <:wbcoin:1398780929664745652>! Use `!cf all` to bet more.",
+            ephemeral=True)
         return
 
     # Final check to ensure the user has enough coins.
     # This is slightly redundant for '!cf all' but acts as a crucial safety net against race conditions.
     if current_balance < amount:
-        return await ctx.send(f"❌ You don't have enough coins! You only have **{current_balance:,}** <:wbcoin:1398780929664745652>.", ephemeral=True)
-
+        return await ctx.send(
+            f"❌ You don't have enough coins! You only have **{current_balance:,}** <:wbcoin:1398780929664745652>.",
+            ephemeral=True)
 
     # --- The rest of the function remains exactly the same ---
     active_coinflips.add(author.id)
@@ -1745,19 +1773,25 @@ async def coinflip(ctx: commands.Context, amount_str: str):
             animation_duration = 3.17
             final_image_url = "https://discord.wordbomb.io/coin_lost.png?v=2"
 
-        flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...", color=discord.Color.blue()).set_image(url="https://discord.wordbomb.io/coin_flip.gif?v=2")
+        flipping_embed = discord.Embed(title=f"{author.display_name}'s Coinflip...",
+                                       color=discord.Color.blue()).set_image(
+            url="https://discord.wordbomb.io/coin_flip.gif?v=2")
         result_message = await ctx.send(embed=flipping_embed)
 
         await asyncio.sleep(animation_duration)
 
         if not success:
-            error_embed = discord.Embed(title="Database Error", description="An error occurred saving the result. Please try again.", color=discord.Color.orange())
+            error_embed = discord.Embed(title="Database Error",
+                                        description="An error occurred saving the result. Please try again.",
+                                        color=discord.Color.orange())
             await result_message.edit(embed=error_embed)
             active_coinflips.remove(author.id)
             return
 
         new_balance = current_balance + net_change
-        final_embed = discord.Embed(title="The coin has landed!", color=discord.Color.green() if won else discord.Color.red()).set_image(url=final_image_url)
+        final_embed = discord.Embed(title="The coin has landed!",
+                                    color=discord.Color.green() if won else discord.Color.red()).set_image(
+            url=final_image_url)
         await result_message.edit(embed=final_embed)
 
         active_coinflips.remove(author.id)
@@ -1775,6 +1809,7 @@ async def coinflip(ctx: commands.Context, amount_str: str):
         if author.id in active_coinflips:
             active_coinflips.remove(author.id)
 
+
 @coinflip.error
 async def coinflip_error(ctx, error):
     """Handles errors for the coinflip command."""
@@ -1783,6 +1818,7 @@ async def coinflip_error(ctx, error):
             "❌ Incorrect usage. You need to specify an amount or 'all'.\n"
             "**Examples:**\n`!cf 500`\n`!cf all`"
         )
+
 
 # Blackjack
 
@@ -1844,6 +1880,7 @@ def calculate_hand_value(hand):
         num_aces -= 1
     return value
 
+
 # FIX: Now correctly formats a hand of (suit, rank) tuples into a string.
 def hand_to_string(hand, is_dealer_turn=False):
     """Converts a hand to a string, hiding the dealer's second card if necessary."""
@@ -1851,8 +1888,8 @@ def hand_to_string(hand, is_dealer_turn=False):
         return ""
     # For the dealer's initial turn, show the first card and a hidden card
     if not is_dealer_turn and len(hand) == 2:
-         # Format the first card correctly from the tuple hand[0]
-         return f"`{hand[0][0]} {hand[0][1]}` `[?]`"
+        # Format the first card correctly from the tuple hand[0]
+        return f"`{hand[0][0]} {hand[0][1]}` `[?]`"
     # For all other cases, format each (suit, rank) tuple
     return " ".join([f"`{card[0]} {card[1]}`" for card in hand])
 
@@ -2174,6 +2211,7 @@ async def handle_hand_end(game: BlackjackGame, custom_result_text=None):
     embed = await create_game_embed(game, final_text, color=final_color)
     await game.message.edit(embed=embed, view=PostHandView(game))
 
+
 @bot.command(name="bj", aliases=["blackjack"])
 async def blackjack(ctx, amount: str):
     """
@@ -2228,6 +2266,7 @@ async def blackjack(ctx, amount: str):
         game.status = "hand_over"
         await handle_hand_end(game)
 
+
 # Balance
 @bot.command(name="bal", aliases=["balance", "wallet"])
 async def bal(ctx: commands.Context, member: discord.Member = None):
@@ -2245,7 +2284,7 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     processing_embed = discord.Embed(
         title="ACCESSING WALLET DATASTREAM...",
         description=f"`Requesting asset profile for operator: {target_user.name}`",
-        color=0x206694 # A dark, techy color
+        color=0x206694  # A dark, techy color
     )
     processing_msg = await ctx.send(embed=processing_embed)
 
@@ -2262,11 +2301,12 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # --- 3. Build the Final Futuristic Embed ---
     final_embed = discord.Embed(
         title="<:wbcoin:1398780929664745652> BANK PROFILE",
-        color=0x00FFFF # A bright, neon "cyberpunk" color
+        color=0x00FFFF  # A bright, neon "cyberpunk" color
     )
 
     # Use the target's avatar and name in the author field for personalization.
-    final_embed.set_author(name=f"{target_user.display_name}'s Balance Information", icon_url=target_user.display_avatar.url)
+    final_embed.set_author(name=f"{target_user.display_name}'s Balance Information",
+                           icon_url=target_user.display_avatar.url)
 
     # Add the breakdown field for more detail. The ">" creates a nice blockquote effect.
     final_embed.add_field(
@@ -2279,7 +2319,7 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
     # The main event: the total balance, formatted to stand out.
     final_embed.add_field(
         name="CURRENT BALANCE:",
-        value=f"<:wbcoin:1398780929664745652> `{total_balance:,}`", # "##" makes the text larger
+        value=f"<:wbcoin:1398780929664745652> `{total_balance:,}`",  # "##" makes the text larger
         inline=False
     )
 
@@ -2287,6 +2327,7 @@ async def bal(ctx: commands.Context, member: discord.Member = None):
 
     # Edit the original message to replace the "processing" embed with the final one.
     await processing_msg.edit(embed=final_embed)
+
 
 # --- ADD THIS NEW ADMIN COMMAND ---
 
@@ -2308,6 +2349,7 @@ async def setup_tickets(ctx):
     ).set_footer(text="Use this for sensitive reports regarding moderators, cheaters, or issues in general.")
 
     await target_channel.send(embed=embed, view=TicketStarterView())
+
 
 # Roulette
 class JoinGameModal(ui.Modal, title='Join Roulette Table'):
@@ -2375,6 +2417,7 @@ class RouletteMultiBetModal(ui.Modal, title='Place Group Bets'):
         # because the function we call is async.
         for bet_name in self.selected_bets:
             await _process_bet_submission(interaction, self.parent_view, bet_name, self.amount_input.value)
+
 
 class RouletteSingleNumberBetModal(ui.Modal, title='Bet on a Single Number'):
     def __init__(self, parent_view: 'MultiplayerRouletteView'):
@@ -2590,6 +2633,189 @@ async def roulette(ctx: commands.Context):
     active_roulette_games[game_message.id] = game_state
 
 
+def format_timedelta(td: timedelta) -> str:
+    """Formats a timedelta object into the largest single unit of time (e.g., '9 hours', '5 minutes')."""
+    total_seconds = int(td.total_seconds())
+    if total_seconds <= 0:
+        return "less than a minute"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    if minutes > 0:
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+    return "less than a minute"
+
+
+@bot.command(name="daily")
+async def daily(ctx: commands.Context):
+    """Claims your daily coin reward, with a bonus for consecutive days."""
+    user = ctx.author
+    today = datetime.utcnow().date()
+    DEVELOPER_ID = 849827666064048178
+
+    is_developer_test = user.id == DEVELOPER_ID
+
+    streak_loss_info = None
+
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute("SELECT last_claim_date, streak FROM daily_claims WHERE user_id = ?", (user.id,))
+        claim_data = await cursor.fetchone()
+
+        if claim_data and datetime.fromisoformat(claim_data[0]).date() == today and not is_developer_test:
+            tomorrow_utc = datetime.utcnow() + timedelta(days=1)
+            next_claim_time = tomorrow_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            time_until_next = next_claim_time - datetime.utcnow()
+
+            embed = discord.Embed(
+                title=f"{user.display_name}'s Daily Coins",
+                description="You have already claimed your daily reward.",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="Next Daily", value=f"in {format_timedelta(time_until_next)}")
+            await ctx.send(embed=embed)
+            return
+
+        base_reward = BASE_DAILY_REWARD
+        streak_bonus = 0
+        current_streak = 0
+
+        if claim_data is None:
+            current_streak = 1
+        else:
+            last_claim_date = datetime.fromisoformat(claim_data[0]).date()
+            saved_streak = claim_data[1]
+
+            if (today - last_claim_date).days == 1 or (is_developer_test and last_claim_date == today):
+                current_streak = saved_streak + 1
+            else:
+                streak_loss_info = {
+                    "previous_streak": saved_streak,
+                    "days_missed": (today - last_claim_date).days
+                }
+                current_streak = 1
+
+        if current_streak > 1:
+            total_reward = math.floor(base_reward * (DAILY_STREAK_MULTIPLIER ** (current_streak - 1)))
+            streak_bonus = total_reward - base_reward
+        else:
+            total_reward = base_reward
+
+        await modify_coin_adjustment(user.id, total_reward)
+        await db.execute("""
+            INSERT INTO daily_claims (user_id, last_claim_date, streak) VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET last_claim_date = excluded.last_claim_date, streak = excluded.streak
+        """, (user.id, today.isoformat(), current_streak))
+        await db.commit()
+
+        tomorrow_utc = datetime.utcnow() + timedelta(days=1)
+        next_claim_time = tomorrow_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_until_next = next_claim_time - datetime.utcnow()
+
+        main_embed_color = discord.Color.green() if not streak_loss_info else discord.Color.light_grey()
+
+        embed = discord.Embed(
+            title=f"{user.display_name}'s Daily Coins",
+            description=f"> {total_reward:,} <:wbcoin:1398780929664745652> was placed in your wallet!",
+            color=main_embed_color
+        )
+
+        # --- ✅ THE PERFECT 2x2 GRID SOLUTION ---
+        # We manually build two text columns and place them in two inline fields.
+
+        left_column = (
+            f"**Base**\n{base_reward:,} <:wbcoin:1398780929664745652>\n\n"
+            f"**Next Daily**\n`In {format_timedelta(time_until_next)}`"
+        )
+
+        right_column = (
+            f"**Streak Bonus**\n{streak_bonus:,} <:wbcoin:1398780929664745652>\n\n"
+            f"**Streak**\n{current_streak} 🔥"
+        )
+
+        # Add the two manually constructed columns as inline fields.
+        # We use an invisible character for the 'name' to keep it clean.
+        embed.add_field(name= '', value=left_column, inline=True)
+        embed.add_field(name='', value=right_column, inline=True)
+
+        main_message = await ctx.send(embed=embed)
+
+        # --- ✅ SEND THE SECOND EMBED IF THE STREAK WAS LOST ---
+        if streak_loss_info:
+            streak_lost_embed = discord.Embed(
+                title="💔 Streak Lost!",
+                description="A daily streak requires claiming once every calendar day (UTC).",
+                color=discord.Color.dark_red()
+            )
+            streak_lost_embed.add_field(name="Last Claim", value=f"{streak_loss_info['days_missed']} days ago",
+                                        inline=True)
+            streak_lost_embed.add_field(name="Streak Lost", value=f"{streak_loss_info['previous_streak']} days",
+                                        inline=True)
+            streak_lost_embed.set_footer(text="Don't worry, a new streak has already begun!")
+
+            # We reply to the original message to keep the conversation threaded
+            await main_message.reply(embed=streak_lost_embed)
+
+
+@bot.command(name="resetstreak")
+async def resetstreak(ctx: commands.Context, member: discord.Member = None):
+    """
+    Modifies a user's daily record to simulate a streak loss on their next claim. (Admin Only)
+
+    If no user is specified, it targets your own record.
+    """
+    ALLOWED_USER_ID = 849827666064048178
+
+    if ctx.author.id != ALLOWED_USER_ID:
+        return await ctx.send("🚫 You are not authorized to use this command.")
+
+    target_user = member or ctx.author
+
+    async with aiosqlite.connect("server_data.db") as db:
+        # First, we need to get the user's current streak to display it
+        cursor = await db.execute("SELECT streak FROM daily_claims WHERE user_id = ?", (target_user.id,))
+        row = await cursor.fetchone()
+
+        if not row:
+            return await ctx.send(f"**{target_user.display_name}** has no daily streak history to modify.")
+
+        streak_to_be_reset = row[0]
+
+        # We set the last claim date to two days ago to guarantee a streak break
+        reset_date = (datetime.utcnow() - timedelta(days=2)).date()
+
+        await db.execute(
+            "UPDATE daily_claims SET last_claim_date = ? WHERE user_id = ?",
+            (reset_date.isoformat(), target_user.id)
+        )
+        await db.commit()
+
+    # Create a more descriptive confirmation embed
+    embed = discord.Embed(
+        title="✅ Daily Streak Primed for Reset",
+        description=(
+            f"The daily claim history for **{target_user.mention}** has been modified. "
+            "Their next `!daily` claim will now trigger a natural streak loss."
+        ),
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="Admin", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Target", value=target_user.mention, inline=True)
+    embed.add_field(name="Current Streak (to be lost)", value=f"{streak_to_be_reset} days", inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@resetstreak.error
+async def resetstreak_error(ctx, error):
+    """Handles errors for the resetstreak command."""
+    if isinstance(error, commands.MemberNotFound):
+        await ctx.send(
+            f"❌ Could not find the member '{error.argument}'. Please make sure you've tagged a valid user in this server.")
+        
 @bot.command(name="addcoins", aliases=["award"])
 async def addcoins(ctx: commands.Context, member: discord.Member, amount: int):
     """
@@ -2753,6 +2979,7 @@ async def removestats_error(ctx, error):
         await ctx.send("❌ Couldn't find that member or the amount provided was not a valid whole number.")
     else:
         print(f"An unhandled error occurred in the removestats command: {error}")
+
 
 @bot.command(name="addstats", aliases=["addpoints"])
 async def addstats(ctx: commands.Context, member: discord.Member, category: str, amount: int):
@@ -2918,6 +3145,7 @@ async def reset_coins(ctx: commands.Context):
         )
         print(f"[ERROR] A critical error occurred during the coin reset command: {e}")
 
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -2929,5 +3157,6 @@ async def on_command_error(ctx, error):
     else:
         # Log unexpected errors without crashing the bot
         print(f"[ERROR] Unexpected error in command {ctx.command}: {error}")
+
 
 bot.run(token)
