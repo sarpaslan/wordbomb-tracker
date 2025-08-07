@@ -2655,9 +2655,6 @@ async def daily(ctx: commands.Context):
     """Claims your daily coin reward, with a bonus for consecutive days."""
     user = ctx.author
     today = datetime.utcnow().date()
-    DEVELOPER_ID = 849827666064048178
-
-    is_developer_test = user.id == DEVELOPER_ID
 
     streak_loss_info = None
 
@@ -2665,7 +2662,7 @@ async def daily(ctx: commands.Context):
         cursor = await db.execute("SELECT last_claim_date, streak FROM daily_claims WHERE user_id = ?", (user.id,))
         claim_data = await cursor.fetchone()
 
-        if claim_data and datetime.fromisoformat(claim_data[0]).date() == today and not is_developer_test:
+        if claim_data and datetime.fromisoformat(claim_data[0]).date() == today:
             tomorrow_utc = datetime.utcnow() + timedelta(days=1)
             next_claim_time = tomorrow_utc.replace(hour=0, minute=0, second=0, microsecond=0)
             time_until_next = next_claim_time - datetime.utcnow()
@@ -2689,7 +2686,7 @@ async def daily(ctx: commands.Context):
             last_claim_date = datetime.fromisoformat(claim_data[0]).date()
             saved_streak = claim_data[1]
 
-            if (today - last_claim_date).days == 1 or (is_developer_test and last_claim_date == today):
+            if (today - last_claim_date).days == 1:
                 current_streak = saved_streak + 1
             else:
                 streak_loss_info = {
@@ -2815,7 +2812,7 @@ async def resetstreak_error(ctx, error):
     if isinstance(error, commands.MemberNotFound):
         await ctx.send(
             f"❌ Could not find the member '{error.argument}'. Please make sure you've tagged a valid user in this server.")
-        
+
 @bot.command(name="addcoins", aliases=["award"])
 async def addcoins(ctx: commands.Context, member: discord.Member, amount: int):
     """
