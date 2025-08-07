@@ -136,6 +136,7 @@ OTHER_BOTS_COMMANDS = {
                   "/wordle - Get Wordle results for a user",
                   "!i - Get information about a word"],
     "Word Bomb Tracker": ["!leaderboards - Get information on the leaderboard",
+                          "!daily - Claim a daily reward!",
                           "!give - Give a user <:wbcoin:1398780929664745652>",
                           "!bj `<amount>` - Play blackjack to earn <:wbcoin:1398780929664745652>!",
                           "!cf `<amount>` - Do a coinflip and test your luck to earn <:wbcoin:1398780929664745652>!",
