@@ -12,7 +12,7 @@ from pymongo import MongoClient
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://discord.wordbomb.io"])
 
 # --- Configuration ---
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
