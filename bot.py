@@ -575,12 +575,24 @@ async def on_raw_reaction_add(payload):
             mention = message_to_edit.mentions[0].mention if message_to_edit.mentions else "the user"
             if first_line.startswith("🐞"):
                 new_first_line = f"🟢 Fixed Bug, reported by {mention}"
+                notification_message = f"✅ {mention}, your bug report has been marked as fixed by a developer! See the original log here: {message_to_edit.jump_url}"
             elif first_line.startswith("💡"):
                 new_first_line = f"🟢 Implemented Idea by {mention}"
+                notification_message = f"✅ {mention}, your suggestion has been implemented! See the original log here: {message_to_edit.jump_url}"
             else:
                 return  # Don't edit if it's not a recognized format
 
             await message_to_edit.edit(content=new_first_line, embed=new_embed)
+
+            try:
+                # 2. Send a new, separate message to notify the user
+                if notification_message:
+                    await POINT_LOGS_CHANNEL.send(notification_message)
+            except discord.Forbidden:
+                print(f"[WARN] Bot doesn't have permission to send messages in the log channel.")
+            except Exception as e:
+                print(f"[ERROR] Failed to send notification message in log channel: {e}")
+
         except Exception as e:
             print(f"[ERROR] Failed to edit point log message: {e}")
         return
