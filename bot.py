@@ -575,10 +575,10 @@ async def on_raw_reaction_add(payload):
             mention = message_to_edit.mentions[0].mention if message_to_edit.mentions else "the user"
             if first_line.startswith("🐞"):
                 new_first_line = f"🟢 Fixed Bug, reported by {mention}"
-                notification_message = f"✅ {mention}, your bug report has been marked as fixed by a developer! See the original log here: {message_to_edit.jump_url}"
+                notification_message = f"✅ {mention}, your bug report has been marked as fixed by a developer! See the original log here: {message_to_edit.jump_url}. Thanks for contributing!"
             elif first_line.startswith("💡"):
                 new_first_line = f"🟢 Implemented Idea by {mention}"
-                notification_message = f"✅ {mention}, your suggestion has been implemented! See the original log here: {message_to_edit.jump_url}"
+                notification_message = f"✅ {mention}, your suggestion has been implemented! See the original log here: {message_to_edit.jump_url}. Thanks for contributing!"
             else:
                 return  # Don't edit if it's not a recognized format
 
