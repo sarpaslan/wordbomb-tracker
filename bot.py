@@ -118,6 +118,19 @@ EXCLUDED_CHANNEL_IDS = {
     1392393127700205680,  # music commands channel
     1328176869572612288,  # normal commands channel
     1349650156001431592,  # what channel
+    1310645572373450782, # en-US suggest words channel
+    1331697536599064626, # fr-FR suggest words channel
+    1333229725761540137, # de-DE suggest words channel
+    1335339488762920991, # es-ES suggest words channel
+    1341035170588917760, # id-ID suggest words channel
+    1334948522436591717, # tr-TR suggest words channel
+    1371921886245818418, # ru suggest words channel
+    1367131592505557012, # sv-SE suggest words channel
+    1359967225410486352, # it-IT suggest words channel
+    1348116185278844979, # tl-TL suggest words channel
+    1342836273819418737, # pt-BR suggest words channel
+    1390240204459085844, # nl suggest words channel
+    1356433831498088502 # mc-MC suggest words channel
 }
 
 voice_states = {}
