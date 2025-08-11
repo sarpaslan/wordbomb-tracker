@@ -63,6 +63,7 @@ LANGUAGE_MOD_IDS = {
     735018514930335746,  # arcy (de-DE), admin
     841195211929813022,  # Blackstone (de-DE), admin
     699006597732630529,  # Häschen (de-DE), admin, legend
+    337177097342681088, # thycooon (de-DE), admin
     726034544142188645,  # zyth (en-US), admin, legend
     751164716692406503,  # cattos (pt-BR), admin
     982489812768555088,  # rynamarole (en-US), admin, legend
