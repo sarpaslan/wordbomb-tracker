@@ -2005,9 +2005,30 @@ class ActionView(discord.ui.View):
     @discord.ui.button(label="Double Down", style=discord.ButtonStyle.blurple, custom_id="bj_double")
     async def double_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+
+        # [FIX] 1. Get the player's current balance BEFORE doing anything else.
+        player_balance = await get_effective_balance(self.game.player.id)
+
+        # [FIX] 2. Check if they can afford to double the bet.
+        if player_balance < self.game.bet:
+            await interaction.followup.send(
+                "You don't have enough coins to double down!",
+                ephemeral=True
+            )
+            return # Stop the function here to prevent negative balance.
+
+        # If the check passes, proceed with the game logic...
+
+        # [FIX] 3. Disable buttons immediately to prevent multiple actions.
+        await self.disable_all_buttons()
+
+        # 4. Deduct the additional bet amount.
         await modify_coin_adjustment(self.game.player.id, -self.game.bet)
+
+        # 5. Double the bet in the game state.
         self.game.bet *= 2
 
+        # 6. Deal the final card and end the hand.
         self.game.deal_card(self.game.player_hand)
         self.game.status = "hand_over"
         await handle_hand_end(self.game)
