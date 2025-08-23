@@ -206,6 +206,18 @@ TICKET_CATEGORY_ID = 1395901776409923684
 # The developer who will be added to all tickets
 DEVELOPER_ID = 265196052192165888
 
+# --- Word Bomb Mini-Game Constants ---
+WORD_GAME_CHANNEL_ID = 1408675934977921044
+MIN_WORD_LENGTH = 3
+MIN_SUB_LENGTH = 2
+PROMPT_MATCH_COUNT_RANGE = (50, 10000)
+DICTIONARY_FILE_PATH = "dictionary.txt"
+
+# --- Word Bomb Mini-Game Globals ---
+# These will be populated at startup
+WORD_GAME_DICTIONARY = set()
+VALID_PROMPTS = []
+
 @bot.event
 async def on_ready():
     global client, db, questions_collection, rejected_questions_collection
