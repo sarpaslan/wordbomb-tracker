@@ -212,14 +212,18 @@ DEVELOPER_ID = 265196052192165888
 # --- Word Bomb Mini-Game Constants ---
 WORD_GAME_CHANNEL_ID = 1409399526841782343
 MIN_WORD_LENGTH = 3
-MIN_SUB_LENGTH = 2
 PROMPT_MATCH_COUNT_RANGE = (50, 10000)
 DICTIONARY_FILE_PATH = "dictionary.txt"
+PROMPT_LENGTHS_WEIGHTS = {
+    2: 65,  # 2-letter prompts have a "weight" of 65 (most common)
+    3: 25,  # 3-letter prompts have a "weight" of 25 (less common)
+    4: 10   # 4-letter prompts have a "weight" of 10 (least common)
+}
 
 # --- Word Bomb Mini-Game Globals ---
 # These will be populated at startup
 WORD_GAME_DICTIONARY = set()
-VALID_PROMPTS = []
+VALID_PROMPTS = {}
 
 @bot.event
 async def on_ready():
@@ -587,7 +591,7 @@ async def on_message(message):
                                 new_rank_cursor = await db.execute(
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
                                 new_rank = (await new_rank_cursor.fetchone())[0]
-                                reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n"
+                                reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
                                              # Change `original_input` to `validation_input` here:
                                              f"**{format_word_emojis(validation_input, prompt=prompt)}**\n\n"
                                              "Round ended!")
@@ -3059,38 +3063,40 @@ def format_word_emojis(word: str, prompt: str = None) -> str:
     return "".join(emoji_string)
 
 
-def _calculate_valid_prompts_sync(dictionary: set) -> list:
+def _calculate_valid_prompts_sync(dictionary: set) -> dict:
     """
-    (Synchronous and blocking) Efficiently calculates valid prompts by iterating
-    through the dictionary once. This is designed to be run in an executor.
+    (Synchronous) Calculates valid prompts for multiple lengths (2, 3, 4) and
+    returns them in a dictionary keyed by length.
     """
-    print("[INFO] [Executor] Starting intensive prompt calculation...")
-    substring_counts = collections.Counter()
+    print("[INFO] [Executor] Starting intensive prompt calculation for multiple lengths...")
 
-    for word in dictionary:
-        # --- THIS IS THE MODIFIED PART ---
-        # The check for hyphens ("-") has been removed. We still filter out apostrophes.
-        unique_subs_for_word = {
-            sub
-            for i in range(len(word) - MIN_SUB_LENGTH + 1)
-            # Create the substring and immediately check it for forbidden characters
-            if "'" not in (sub := word[i:i + MIN_SUB_LENGTH])
-        }
-        # --- END OF MODIFICATION ---
+    # Initialize a dictionary to hold prompts categorized by length
+    # e.g., {2: [('en', 5000), ...], 3: [('ing', 8000), ...]}
+    valid_prompts_by_length = {length: [] for length in PROMPT_LENGTHS_WEIGHTS}
 
-        substring_counts.update(unique_subs_for_word)
+    # We iterate through each desired length
+    for length in PROMPT_LENGTHS_WEIGHTS.keys():
+        print(f"[INFO] [Executor] Calculating all substrings of length {length}...")
+        substring_counts = collections.Counter()
+        for word in dictionary:
+            # Generate unique substrings of the current length for this word
+            unique_subs_for_word = {
+                sub
+                for i in range(len(word) - length + 1)
+                if "'" not in (sub := word[i:i + length])
+            }
+            substring_counts.update(unique_subs_for_word)
 
-    print(
-        f"[INFO] [Executor] Scanned {len(dictionary)} words and found {len(substring_counts)} unique substrings (after filtering).")
+        print(f"[INFO] [Executor] Found {len(substring_counts)} unique substrings of length {length}. Filtering...")
 
-    valid_prompts_list = [
-        (sub, count)
-        for sub, count in substring_counts.items()
-        if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]
-    ]
+        # Filter the results for this length and add to our main dictionary
+        for sub, count in substring_counts.items():
+            if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]:
+                valid_prompts_by_length[length].append((sub, count))
 
-    print(f"[INFO] [Executor] Filtering complete. Found {len(valid_prompts_list)} prompts in the desired range.")
-    return valid_prompts_list
+        print(f"[SUCCESS] [Executor] Found {len(valid_prompts_by_length[length])} valid prompts of length {length}.")
+
+    return valid_prompts_by_length
 
 
 async def load_word_game_dictionary():
@@ -3156,10 +3162,28 @@ async def on_raw_message_delete(payload):
 
 
 def get_new_prompt():
-    """Selects a new random prompt and its match count from the pre-filtered list."""
+    """
+    Selects a new random prompt using a weighted chance for different lengths.
+    """
     if not VALID_PROMPTS:
         return None, 0
-    return random.choice(VALID_PROMPTS)
+
+    # --- WEIGHTED RANDOM LOGIC ---
+    # 1. Create lists of available prompt lengths and their corresponding weights
+    # This dynamically handles cases where a length might have 0 valid prompts
+    available_lengths = [length for length, prompts in VALID_PROMPTS.items() if prompts]
+    if not available_lengths:
+        # Safety net in case no prompts were found for any length
+        return None, 0
+
+    weights = [PROMPT_LENGTHS_WEIGHTS[length] for length in available_lengths]
+
+    # 2. Use random.choices to pick a LENGTH based on the weights
+    chosen_length = random.choices(available_lengths, weights=weights, k=1)[0]
+
+    # 3. Pick a random prompt from the list for the chosen length
+    chosen_prompt_list = VALID_PROMPTS[chosen_length]
+    return random.choice(chosen_prompt_list)
 
 
 class DisclaimerView(ui.View):
