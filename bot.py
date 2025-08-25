@@ -529,14 +529,12 @@ async def on_message(message):
 
     # --- Word Bomb Mini-Game Logic ---
     if message.channel.id == WORD_GAME_CHANNEL_ID and not message.author.bot:
-        # --- NEW LOGIC: Handle potential multi-word inputs ---
         original_input = message.content
         # If the input has spaces, replace them with hyphens for validation. Otherwise, use the original input.
         validation_input = original_input.replace(' ', '-') if ' ' in original_input else original_input
 
-        # The pre-check is now performed on the (potentially modified) validation input
         if len(validation_input) < MIN_WORD_LENGTH:
-            pass  # Silently ignore messages that are too short after transformation
+            pass
         else:
             async with aiosqlite.connect("server_data.db") as db:
                 cursor = await db.execute(
@@ -549,7 +547,6 @@ async def on_message(message):
                 if game_data:
                     prompt = game_data[0]
                     if message.created_at > datetime.fromisoformat(game_data[1]).replace(tzinfo=timezone.utc):
-                        # We normalize and validate using the `validation_input`
                         normalized_input = normalize_word(validation_input)
                         is_valid = (
                                 prompt in normalized_input and
@@ -564,21 +561,47 @@ async def on_message(message):
 
                             if delete_cursor.rowcount > 0:
                                 # --- WE ARE THE WINNER ---
+
+                                # --- CHANGE 1: Update the short-term memory structure ---
+                                # We now store: [prompt, solve_time, has_trash_talked_flag]
+                                # We use a list because it's mutable (we need to change the flag).
                                 _last_solved_prompt_info[message.channel.id] = [prompt, datetime.now(timezone.utc),
                                                                                 False]
 
-                                # (Winner logic remains the same)
+                                # (The rest of your existing winner/ranking logic remains unchanged)
                                 user_id = message.author.id
-                                # ... (rest of DB updates) ...
-
-                                # --- MODIFIED: Use the original_input for display ---
+                                current_data_cursor = await db.execute(
+                                    "SELECT count FROM word_minigame_solves WHERE user_id = ?", (user_id,))
+                                current_data = await current_data_cursor.fetchone()
+                                is_first_solve = current_data is None
+                                current_solves = 0 if is_first_solve else current_data[0]
+                                old_rank_cursor = await db.execute(
+                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
+                                old_rank = (await old_rank_cursor.fetchone())[0]
+                                await db.execute("""
+                                        INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
+                                        ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+                                    """, (user_id,))
+                                await db.commit()
+                                new_solves = current_solves + 1
+                                new_rank_cursor = await db.execute(
+                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
+                                new_rank = (await new_rank_cursor.fetchone())[0]
                                 reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n"
-                                             f"**{format_word_emojis(original_input, prompt=prompt)}**\n\n"  # Displays the version with spaces
+                                             # Change `original_input` to `validation_input` here:
+                                             f"**{format_word_emojis(validation_input, prompt=prompt)}**\n\n"
                                              "Round ended!")
-                                # ... (rest of ranking logic) ...
-
+                                rank_msg = ""
+                                if is_first_solve:
+                                    total_players_cursor = await db.execute("SELECT COUNT(*) FROM word_minigame_solves")
+                                    total_players = (await total_players_cursor.fetchone())[0]
+                                    rank_msg = f"You're on the board at rank **#{new_rank}** out of {total_players} players! 🎉"
+                                elif new_rank < old_rank:
+                                    rank_change = old_rank - new_rank
+                                    rank_msg = f"You moved up **{rank_change}** place{'s' if rank_change > 1 else ''}! You are now rank **#{new_rank}**! 📈"
                                 full_reply = reply_msg
-                                # ... (construct and send reply) ...
+                                if rank_msg:
+                                    full_reply += f"\n{rank_msg}"
                                 await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
                                 await asyncio.sleep(3)
                                 await start_new_word_game_round(message.channel)
