@@ -3006,7 +3006,8 @@ SOLVE_EMOJI_MAP = {
 }
 
 TRASH_TALK_LINES = (
-    "Too slow, {mention}, the prompt was already solved vro. Nice word though."
+    "Too slow, {mention}, the prompt was already solved vro. Nice word though.",
+    "{mention} nice try buddy. Prompt was already solved though :wilted_rose:."
 )
 
 _last_solved_prompt_info = {}
