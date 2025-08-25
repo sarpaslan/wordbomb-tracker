@@ -1,7 +1,7 @@
 import discord
 from discord import ui
 from discord.ext import commands, tasks
-from discord.ui import Modal, TextInput, Select
+from discord.ui import Modal, TextInput
 import logging
 from dotenv import load_dotenv
 import os
@@ -9,10 +9,13 @@ import aiosqlite
 import random
 import datetime
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import motor.motor_asyncio
 import asyncio
 import math
+import unicodedata
+import collections
+import functools
 
 # Load token
 load_dotenv()
@@ -119,19 +122,20 @@ EXCLUDED_CHANNEL_IDS = {
     1392393127700205680,  # music commands channel
     1328176869572612288,  # normal commands channel
     1349650156001431592,  # what channel
-    1310645572373450782, # en-US suggest words channel
-    1331697536599064626, # fr-FR suggest words channel
-    1333229725761540137, # de-DE suggest words channel
-    1335339488762920991, # es-ES suggest words channel
-    1341035170588917760, # id-ID suggest words channel
-    1334948522436591717, # tr-TR suggest words channel
-    1371921886245818418, # ru suggest words channel
-    1367131592505557012, # sv-SE suggest words channel
-    1359967225410486352, # it-IT suggest words channel
-    1348116185278844979, # tl-TL suggest words channel
-    1342836273819418737, # pt-BR suggest words channel
-    1390240204459085844, # nl suggest words channel
-    1356433831498088502 # mc-MC suggest words channel
+    1310645572373450782,  # en-US suggest words channel
+    1331697536599064626,  # fr-FR suggest words channel
+    1333229725761540137,  # de-DE suggest words channel
+    1335339488762920991,  # es-ES suggest words channel
+    1341035170588917760,  # id-ID suggest words channel
+    1334948522436591717,  # tr-TR suggest words channel
+    1371921886245818418,  # ru suggest words channel
+    1367131592505557012,  # sv-SE suggest words channel
+    1359967225410486352,  # it-IT suggest words channel
+    1348116185278844979,  # tl-TL suggest words channel
+    1342836273819418737,  # pt-BR suggest words channel
+    1390240204459085844,  # nl suggest words channel
+    1356433831498088502,  # mc-MC suggest words channel
+    # 1408675934977921044,  # word bomb mini channel
 }
 
 voice_states = {}
@@ -307,7 +311,48 @@ async def on_ready():
                 streak INTEGER NOT NULL DEFAULT 1
             )
         """)
+        # --- NEW TABLES FOR WORD BOMB MINI-GAME ---
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS word_minigame_solves (
+                user_id INTEGER PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS word_minigame_active (
+                channel_id INTEGER PRIMARY KEY,
+                current_prompt TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                start_timestamp TEXT NOT NULL
+            )
+        """)
         await db_sqlite.commit()
+
+    # --- Load Word Game Assets ---
+    await load_word_game_dictionary()
+
+    # --- Word Game Restart Resilience ---
+    print("[INFO] Checking for active word games from before restart...")
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute("SELECT channel_id, message_id FROM word_minigame_active")
+        active_games = await cursor.fetchall()
+        for channel_id, message_id in active_games:
+            channel = bot.get_channel(channel_id)
+            if not channel:
+                # Channel was deleted while bot was offline, clean up the game
+                await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?", (channel_id,))
+                await db.commit()
+                continue
+            try:
+                # Check if the message still exists
+                await channel.fetch_message(message_id)
+                print(f"[SUCCESS] Game in channel {channel_id} is still active.")
+            except discord.NotFound:
+                # The message was deleted while the bot was offline. Start a new round.
+                print(f"[WARN] Prompt message in {channel.name} was deleted while offline. Starting new round.")
+                await start_new_word_game_round(channel)
+            except discord.Forbidden:
+                print(f"[ERROR] Lacking permissions to check for prompt message in {channel.name}.")
 
     print("[INFO] Reconciling voice states on startup...")
     startup_time = datetime.utcnow()
@@ -346,6 +391,8 @@ async def on_ready():
 
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
+
+    bot.add_view(DisclaimerView())
 
     # 2. Add the new slash command group to the bot's command tree.
 
@@ -481,6 +528,101 @@ async def on_message(message):
         else:
             pass
 
+    # --- Word Bomb Mini-Game Logic ---
+    if message.channel.id == WORD_GAME_CHANNEL_ID and not message.author.bot:
+        word_to_check = message.content
+
+        # Quick pre-check to avoid database queries for invalid formats
+        if ' ' in word_to_check or len(word_to_check) < MIN_WORD_LENGTH:
+            pass  # Silently ignore multi-word or short messages
+        else:
+            async with aiosqlite.connect("server_data.db") as db:
+                # 1. Check for an ACTIVE game first
+                cursor = await db.execute(
+                    "SELECT current_prompt, start_timestamp FROM word_minigame_active WHERE channel_id = ?",
+                    (WORD_GAME_CHANNEL_ID,)
+                )
+                game_data = await cursor.fetchone()
+
+                # --- PATH 1: A game is currently active. This is the path for the winner. ---
+                if game_data:
+                    prompt = game_data[0]
+                    # Check if message was sent after prompt was posted
+                    if message.created_at > datetime.fromisoformat(game_data[1]).replace(tzinfo=timezone.utc):
+                        normalized_input = normalize_word(word_to_check)
+                        is_valid = (
+                                prompt in normalized_input and
+                                normalized_input in WORD_GAME_DICTIONARY and
+                                all(c.isalpha() or c in "-'" for c in normalized_input)
+                        )
+
+                        if is_valid:
+                            # Attempt to claim victory by deleting the active game row
+                            delete_cursor = await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?",
+                                                             (WORD_GAME_CHANNEL_ID,))
+                            await db.commit()
+
+                            if delete_cursor.rowcount > 0:
+                                # --- WE ARE THE WINNER ---
+
+                                # Store this prompt in our short-term memory for the "too slow" check
+                                _last_solved_prompt_info[message.channel.id] = (prompt, datetime.now(timezone.utc))
+
+                                # (The rest of your existing winner/ranking logic is perfect and goes here)
+                                user_id = message.author.id
+                                current_data_cursor = await db.execute(
+                                    "SELECT count FROM word_minigame_solves WHERE user_id = ?", (user_id,))
+                                current_data = await current_data_cursor.fetchone()
+                                is_first_solve = current_data is None
+                                current_solves = 0 if is_first_solve else current_data[0]
+                                old_rank_cursor = await db.execute(
+                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
+                                old_rank = (await old_rank_cursor.fetchone())[0]
+                                await db.execute("""
+                                        INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
+                                        ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+                                    """, (user_id,))
+                                await db.commit()
+                                new_solves = current_solves + 1
+                                new_rank_cursor = await db.execute(
+                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
+                                new_rank = (await new_rank_cursor.fetchone())[0]
+                                reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
+                                             f"**{word_to_emojis(word_to_check)}**\n\n"
+                                             "Round ended!")
+                                rank_msg = ""
+                                if is_first_solve:
+                                    total_players_cursor = await db.execute("SELECT COUNT(*) FROM word_minigame_solves")
+                                    total_players = (await total_players_cursor.fetchone())[0]
+                                    rank_msg = f"You're on the board at rank **#{new_rank}** out of {total_players} players! 🎉"
+                                elif new_rank < old_rank:
+                                    rank_change = old_rank - new_rank
+                                    rank_msg = f"You moved up **{rank_change}** place{'s' if rank_change > 1 else ''}! You are now rank **#{new_rank}**! 📈"
+                                full_reply = reply_msg
+                                if rank_msg:
+                                    full_reply += f"\n{rank_msg}"
+                                await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
+                                await asyncio.sleep(3)
+                                await start_new_word_game_round(message.channel)
+
+                # --- PATH 2: No active game, but check our short-term memory. This is for the "too slow" players. ---
+                elif message.channel.id in _last_solved_prompt_info:
+                    last_prompt, solve_time = _last_solved_prompt_info[message.channel.id]
+
+                    # Only check messages sent within 2 seconds of the solve time
+                    if (message.created_at - solve_time).total_seconds() < 2.0:
+                        normalized_input = normalize_word(word_to_check)
+                        is_valid_but_late = (
+                                last_prompt in normalized_input and
+                                normalized_input in WORD_GAME_DICTIONARY and
+                                all(c.isalpha() or c in "-'" for c in normalized_input)
+                        )
+
+                        if is_valid_but_late:
+                            trash_talk_line = random.choice(TRASH_TALK_LINES)
+                            reply_text = trash_talk_line.format(mention=message.author.mention)
+                            await message.reply(reply_text, allowed_mentions=discord.AllowedMentions(users=False))
+
     await bot.process_commands(message)
 
 
@@ -546,6 +688,10 @@ async def _fetch_message_snapshot(channel: discord.TextChannel, reacted_message:
 
 @bot.event
 async def on_raw_reaction_add(payload):
+    if POINT_LOGS_CHANNEL is None:
+        print("[WARN] on_raw_reaction_add triggered before POINT_LOGS_CHANNEL was ready. Skipping event.")
+        return
+
     DEVELOPER_IDS = {265196052192165888, 849827666064048178}
     BUG_EMOJI = "🐞"
     IDEA_EMOJI = "☑️"
@@ -915,6 +1061,8 @@ class LeaderboardSelectMenu(discord.ui.Select):
         options = [
             discord.SelectOption(label="Messages", value="messages", description="Top chatters in the server.",
                                  emoji="💬"),
+            discord.SelectOption(label="Word Game Solves", value="solves",
+                                 description="Top WordBomb mini-game solvers.", emoji="💣"),
             discord.SelectOption(label="Trivia", value="trivia", description="Most approved trivia questions.",
                                  emoji="❓"),
             discord.SelectOption(label="Coins", value="coins", description="Richest users by total activity.",
@@ -969,7 +1117,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         "messages": "messages",
         "bugs": "bug_points",
         "ideas": "idea_points",
-        "voice": "voice_time"
+        "voice": "voice_time",
+        "solves": "word_minigame_solves"
     }
     label_map = {
         "trivia": ("question suggested", "questions suggested"),
@@ -977,7 +1126,8 @@ async def update_leaderboard(ctx_or_interaction, category, page, author_id):
         "bugs": ("bug found", "bugs found"),
         "ideas": ("idea", "ideas"),
         "voice": ("second", "seconds"),
-        "coins": ("coin", "coins")
+        "coins": ("coin", "coins"),
+        "solves": ("solve", "solves")
     }
 
     full_rows = []
@@ -2810,6 +2960,252 @@ async def daily(ctx: commands.Context):
             # We reply to the original message to keep the conversation threaded
             await main_message.reply(embed=streak_lost_embed)
 
+
+# wordbomb mini
+def normalize_word(word: str) -> str:
+    """Normalizes a word for validation: lowercase, NFKD unicode, strips diacritics."""
+    word = word.lower().strip()
+    # Normalize unicode characters (e.g., é -> e)
+    nfkd_form = unicodedata.normalize('NFKD', word)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+LETTER_EMOJI_MAP = {
+    'a': '<:a:1409357183132635156>', 'b': '<:b:1409357191000887398>',
+    'c': '<:c:1409357197808369724>', 'd': '<:d:1409357205890662510>',
+    'e': '<:e:1409357238329540619>', 'f': '<:f:1409357246206578738>',
+    'g': '<:g:1409357254070636665>', 'h': '<:h:1409357267505254502>',
+    'i': '<:i:1409357275432358042>', 'j': '<:j:1409357283078443048>',
+    'k': '<:k:1409357290510749706>', 'l': '<:l:1409357297603317810>',
+    'm': '<:m:1409357305950244936>', 'n': '<:n:1409357319640317972>',
+    'o': '<:o:1409357326602997810>', 'p': '<:p:1409357336677711942>',
+    'q': '<:q:1409357373054783519>', 'r': '<:r:1409357383486013450>',
+    's': '<:s:1409357394080825375>', 't': '<:t:1409357402347933849>',
+    'u': '<:u:1409357422367080529>', 'v': '<:v:1409357431212871780>',
+    'w': '<:w:1409357440608108615>', 'x': '<:x:1409357448984264896>',
+    'y': '<:y:1409357486883999836>', 'z': '<:z:1409357494995783750>'
+}
+
+TRASH_TALK_LINES = (
+    "Too slow, {mention}, the prompt was already solved vro. Nice word though."
+)
+
+_last_solved_prompt_info = {}
+
+def prompt_to_emojis(prompt: str) -> str:
+    """Converts a string prompt like 'ra' into a sequence of Discord emojis."""
+    emoji_string = ""
+    for char in prompt.lower():
+        # Get the emoji string for the character, or the character itself if it's not in our map
+        emoji_string += LETTER_EMOJI_MAP.get(char, char)
+    return emoji_string
+
+def word_to_emojis(word: str) -> str:
+    """Converts a solved word into a sequence of letter emojis."""
+    emoji_string = ""
+    for char in word.lower():
+        # Fallback to the character itself if no custom emoji exists for it
+        emoji_string += LETTER_EMOJI_MAP.get(char, f":regional_indicator_{char}:")
+    return emoji_string
+
+def _calculate_valid_prompts_sync(dictionary: set) -> list:
+    """
+    (Synchronous and blocking) Efficiently calculates valid prompts by iterating
+    through the dictionary once. This is designed to be run in an executor.
+    """
+    print("[INFO] [Executor] Starting intensive prompt calculation...")
+    substring_counts = collections.Counter()
+
+    # Iterate through each word in the dictionary
+    for word in dictionary:
+        # --- THIS IS THE MODIFIED PART ---
+        # Generate unique substrings, but add a condition to filter out any
+        # that contain a hyphen or an apostrophe.
+        unique_subs_for_word = {
+            sub
+            for i in range(len(word) - MIN_SUB_LENGTH + 1)
+            # Create the substring and immediately check it for forbidden characters
+            if "'" not in (sub := word[i:i + MIN_SUB_LENGTH]) and "-" not in sub
+        }
+        # --- END OF MODIFICATION ---
+
+        # Update the master counter with the substrings found in this word
+        substring_counts.update(unique_subs_for_word)
+
+    print(f"[INFO] [Executor] Scanned {len(dictionary)} words and found {len(substring_counts)} unique substrings (after filtering).")
+
+    # Filter the results to find prompts within the desired match count range
+    valid_prompts_list = [
+        (sub, count)
+        for sub, count in substring_counts.items()
+        if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]
+    ]
+
+    print(f"[INFO] [Executor] Filtering complete. Found {len(valid_prompts_list)} prompts in the desired range.")
+    return valid_prompts_list
+
+
+async def load_word_game_dictionary():
+    """
+    Loads the dictionary and offloads the heavy prompt calculation to a thread
+    to avoid blocking the bot's event loop.
+    """
+    global WORD_GAME_DICTIONARY, VALID_PROMPTS
+    print("[INFO] Loading WordBomb mini-game dictionary...")
+    try:
+        with open(DICTIONARY_FILE_PATH, 'r', encoding='utf-8') as f:
+            words = {normalize_word(line.strip()) for line in f if len(line.strip()) >= MIN_WORD_LENGTH}
+
+        WORD_GAME_DICTIONARY = {w for w in words if all(c.isalpha() or c in "-'" for c in w)}
+        print(f"[SUCCESS] Loaded {len(WORD_GAME_DICTIONARY)} valid words into memory.")
+
+        if not WORD_GAME_DICTIONARY:
+            print("[ERROR] Dictionary is empty after loading. Cannot calculate prompts.")
+            return
+
+        # --- THIS IS THE KEY CHANGE ---
+        # Run the blocking, CPU-intensive task in a separate thread to prevent freezing
+        loop = asyncio.get_running_loop()
+        task = functools.partial(_calculate_valid_prompts_sync, WORD_GAME_DICTIONARY)
+        VALID_PROMPTS = await loop.run_in_executor(None, task)
+        # --- END OF CHANGE ---
+
+        if not VALID_PROMPTS:
+            print("[ERROR] No valid prompts found! Check your dictionary or prompt count range.")
+        else:
+            print(f"[SUCCESS] Pre-calculation complete. Found {len(VALID_PROMPTS)} valid prompts.")
+
+    except FileNotFoundError:
+        print(f"[ERROR] CRITICAL: The dictionary file '{DICTIONARY_FILE_PATH}' was not found.")
+        WORD_GAME_DICTIONARY = set()
+        VALID_PROMPTS = []
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred while loading the dictionary: {e}")
+
+
+@bot.event
+async def on_raw_message_delete(payload):
+    """Handles the case where a moderator accidentally deletes the active prompt message."""
+    # Check if the deleted message was in our game channel
+    if payload.channel_id != WORD_GAME_CHANNEL_ID:
+        return
+
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute(
+            "SELECT current_prompt FROM word_minigame_active WHERE message_id = ?",
+            (payload.message_id,)
+        )
+        game_data = await cursor.fetchone()
+
+        if game_data:
+            print(f"[WARN] Word game prompt message {payload.message_id} was deleted. Re-posting...")
+            # If a game was associated with that message, start a new round.
+            # This effectively re-posts the prompt and updates the message_id.
+            channel = bot.get_channel(WORD_GAME_CHANNEL_ID)
+            if channel:
+                # To prevent a dead prompt, we'll just start the next round immediately.
+                await start_new_word_game_round(channel)
+
+
+def get_new_prompt():
+    """Selects a new random prompt and its match count from the pre-filtered list."""
+    if not VALID_PROMPTS:
+        return None, 0
+    return random.choice(VALID_PROMPTS)
+
+
+class DisclaimerView(ui.View):
+    def __init__(self):
+        # timeout=None makes the button persistent across bot restarts
+        super().__init__(timeout=None)
+
+    @ui.button(label="", style=discord.ButtonStyle.secondary, emoji="⚠️", custom_id="wordgame_disclaimer_btn")
+    async def disclaimer_button(self, interaction: discord.Interaction, button: ui.Button):
+        """When the disclaimer button is clicked, this function sends an ephemeral message."""
+
+        disclaimer_text = (
+            "**Dictionary Information**\n\n"
+            "Please be aware that the dictionary used by this bot for the mini-game is currently different from the one used in the main Word Bomb game. "
+            "These will be synced in a future update.\n\n"
+            "In the meantime, this may cause some discrepancies:\n"
+            "• Some valid in-game words may not be accepted here.\n"
+            "• The sub count for a prompt may not be perfectly accurate.\n\n"
+            "Thank you for your understanding!"
+        )
+
+        await interaction.response.send_message(disclaimer_text, ephemeral=True)
+
+def create_word_game_embed(prompt: str, match_count: int, start_time: datetime) -> discord.Embed:
+    """Creates the standard embed for the word mini-game prompt."""
+    embed = discord.Embed(
+        # --- THIS IS THE ONLY LINE THAT CHANGES ---
+        title=f"<:logo:1409319111632224268> Prompt: {prompt_to_emojis(prompt)}",
+        description="Be the first to type a valid English word \ncontaining the substring above!",
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(name="Dictionary Matches", value=f"This prompt is sub `{match_count:,}`.", inline=False)
+
+    embed.set_footer(text="Good luck!")
+    embed.timestamp = start_time
+    return embed
+
+
+async def start_new_word_game_round(channel: discord.TextChannel):
+    """Generates a new prompt, sends the embed, and saves the state to the database."""
+    if not VALID_PROMPTS:
+        await channel.send("`[ERROR] Cannot start a new round: No valid prompts are available.`")
+        return
+
+    prompt, match_count = get_new_prompt()
+    start_time = datetime.now(timezone.utc)
+
+    embed = create_word_game_embed(prompt, match_count, start_time)
+
+    try:
+        # --- THIS IS THE KEY CHANGE ---
+        # We now pass the view when sending the message
+        prompt_message = await channel.send(embed=embed, view=DisclaimerView())
+        # --- END OF CHANGE ---
+    except discord.Forbidden:
+        print(f"[ERROR] Cannot send messages in the word game channel ({channel.name}). Aborting.")
+        return
+
+    async with aiosqlite.connect("server_data.db") as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO word_minigame_active (channel_id, current_prompt, message_id, start_timestamp)
+            VALUES (?, ?, ?, ?)
+        """, (channel.id, prompt, prompt_message.id, start_time.isoformat()))
+        await db.commit()
+    print(f"[INFO] New word game round started in #{channel.name} with prompt '{prompt}'.")
+
+
+def is_specific_user(user_id: int):
+    async def predicate(ctx: commands.Context) -> bool:
+        return ctx.author.id == user_id
+    return commands.check(predicate)
+
+
+@bot.command(name="startwordgame")
+async def start_word_game(ctx: commands.Context):
+    """(Admin-only) Starts the first round of the word mini-game."""
+    DEVELOPER_IDS = {265196052192165888, 849827666064048178}
+    # Use a more reliable admin check
+    if ctx.author.id not in DEVELOPER_IDS:
+        return await ctx.send("🚫 You do not have permission to use this command.")
+
+    if ctx.channel.id != WORD_GAME_CHANNEL_ID:
+        return await ctx.send(f"This command can only be used in the designated game channel.")
+
+    # --- NEW, CRUCIAL CHECK ---
+    # Give the admin direct feedback if the prompt list is empty
+    if not VALID_PROMPTS:
+        return await ctx.send(
+            "❌ **Cannot start game:** No valid prompts were loaded on startup.\n"
+            "Please check the console logs for errors related to `dictionary.txt` or prompt calculation."
+        )
+
+    await ctx.send("✅ Starting the first round of the word game...")
+    await start_new_word_game_round(ctx.channel)
 
 @bot.command(name="resetstreak")
 async def resetstreak(ctx: commands.Context, member: discord.Member = None):
