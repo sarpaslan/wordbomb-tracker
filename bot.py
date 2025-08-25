@@ -2999,11 +2999,21 @@ def prompt_to_emojis(prompt: str) -> str:
     return emoji_string
 
 def word_to_emojis(word: str) -> str:
-    """Converts a solved word into a sequence of letter emojis."""
+    """
+    Converts a solved word into a sequence of letter emojis,
+    keeping hyphens and apostrophes as plain text.
+    """
     emoji_string = ""
     for char in word.lower():
-        # Fallback to the character itself if no custom emoji exists for it
-        emoji_string += LETTER_EMOJI_MAP.get(char, f":regional_indicator_{char}:")
+        # --- THIS IS THE NEW LOGIC ---
+        # First, check if it's a special character we want to keep as-is.
+        if char in "-'":
+            emoji_string += char
+        # If not, try to get the custom emoji.
+        # If that fails, fall back to the regional indicator.
+        else:
+            emoji_string += LETTER_EMOJI_MAP.get(char, f":regional_indicator_{char}:")
+        # --- END OF NEW LOGIC ---
     return emoji_string
 
 def _calculate_valid_prompts_sync(dictionary: set) -> list:
