@@ -16,6 +16,7 @@ import math
 import unicodedata
 import collections
 import functools
+from collections import defaultdict, deque
 
 # Load token
 load_dotenv()
@@ -224,6 +225,10 @@ PROMPT_LENGTHS_WEIGHTS = {
 # These will be populated at startup
 WORD_GAME_DICTIONARY = set()
 VALID_PROMPTS = {}
+
+RECENT_PROMPT_MEMORY_SIZE = 200 # The bot will not repeat any of the last 200 prompts.
+
+_recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
 @bot.event
 async def on_ready():
@@ -1054,7 +1059,7 @@ async def get_coins_leaderboard_data() -> list:
     Gathers all user stats, calculates their effective coin balance, sorts the
     results, and returns them as a list of (user_id, coin_count) tuples.
     """
-    from collections import defaultdict
+
     user_stats = defaultdict(lambda: {
         "messages": 0, "bugs": 0, "ideas": 0,
         "voice_seconds": 0, "trivia": 0, "adjustment": 0
@@ -3212,27 +3217,36 @@ async def on_raw_message_delete(payload):
 
 def get_new_prompt():
     """
-    Selects a new random prompt using a weighted chance for different lengths.
+    Selects a new random prompt, ensuring it has not been used in the last
+    RECENT_PROMPT_MEMORY_SIZE rounds.
     """
     if not VALID_PROMPTS:
         return None, 0
 
-    # --- WEIGHTED RANDOM LOGIC ---
-    # 1. Create lists of available prompt lengths and their corresponding weights
-    # This dynamically handles cases where a length might have 0 valid prompts
     available_lengths = [length for length, prompts in VALID_PROMPTS.items() if prompts]
     if not available_lengths:
-        # Safety net in case no prompts were found for any length
         return None, 0
 
     weights = [PROMPT_LENGTHS_WEIGHTS[length] for length in available_lengths]
 
-    # 2. Use random.choices to pick a LENGTH based on the weights
-    chosen_length = random.choices(available_lengths, weights=weights, k=1)[0]
+    # --- NEW ANTI-REPEAT LOGIC ---
 
-    # 3. Pick a random prompt from the list for the chosen length
-    chosen_prompt_list = VALID_PROMPTS[chosen_length]
-    return random.choice(chosen_prompt_list)
+    # Try up to 10 times to find a unique prompt before giving up (a safety measure)
+    for _ in range(10):
+        # 1. Pick a length and a prompt like before
+        chosen_length = random.choices(available_lengths, weights=weights, k=1)[0]
+        prompt, match_count = random.choice(VALID_PROMPTS[chosen_length])
+
+        # 2. Check if the chosen prompt is in our recent memory
+        if prompt not in _recent_prompts:
+            # 3. If it's a fresh prompt, add it to our memory and return it
+            _recent_prompts.append(prompt)
+            return prompt, match_count
+
+    # 4. Fallback: If we failed to find a unique prompt after 10 tries (very rare),
+    # just return the last one we picked to avoid crashing.
+    print("[WARN] Could not find a unique prompt after 10 attempts. A repeat may occur.")
+    return prompt, match_count
 
 
 class DisclaimerView(ui.View):
