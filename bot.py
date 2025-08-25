@@ -587,7 +587,7 @@ async def on_message(message):
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
                                 new_rank = (await new_rank_cursor.fetchone())[0]
                                 reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
-                                             f"**{word_to_emojis(word_to_check)}**\n\n"
+                                             f"**{format_word_emojis(word_to_check, prompt=prompt)}**\n\n"
                                              "Round ended!")
                                 rank_msg = ""
                                 if is_first_solve:
@@ -2968,20 +2968,41 @@ def normalize_word(word: str) -> str:
     nfkd_form = unicodedata.normalize('NFKD', word)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
-LETTER_EMOJI_MAP = {
-    'a': '<:a:1409357183132635156>', 'b': '<:b:1409357191000887398>',
-    'c': '<:c:1409357197808369724>', 'd': '<:d:1409357205890662510>',
-    'e': '<:e:1409357238329540619>', 'f': '<:f:1409357246206578738>',
-    'g': '<:g:1409357254070636665>', 'h': '<:h:1409357267505254502>',
-    'i': '<:i:1409357275432358042>', 'j': '<:j:1409357283078443048>',
-    'k': '<:k:1409357290510749706>', 'l': '<:l:1409357297603317810>',
-    'm': '<:m:1409357305950244936>', 'n': '<:n:1409357319640317972>',
-    'o': '<:o:1409357326602997810>', 'p': '<:p:1409357336677711942>',
-    'q': '<:q:1409357373054783519>', 'r': '<:r:1409357383486013450>',
-    's': '<:s:1409357394080825375>', 't': '<:t:1409357402347933849>',
-    'u': '<:u:1409357422367080529>', 'v': '<:v:1409357431212871780>',
-    'w': '<:w:1409357440608108615>', 'x': '<:x:1409357448984264896>',
-    'y': '<:y:1409357486883999836>', 'z': '<:z:1409357494995783750>'
+PROMPT_EMOJI_MAP = {
+    'a': '<:key_A:1409612462227062824>', 'b': '<:key_B:1409612493784875070>',
+    'c': '<:key_C:1409612512583749672>', 'd': '<:key_D:1409612531990794394>',
+    'e': '<:key_E:1409612547870429317>', 'f': '<:key_F:1409612565100888155>',
+    'g': '<:key_G:1409612583849295924>', 'h': '<:key_H:1409612622692618311>',
+    'i': '<:key_I:1409612660525367449>', 'j': '<:key_J:1409612676488761465>',
+    'k': '<:key_K:1409612691517210785>', 'l': '<:key_L:1409612709116379287>',
+    'm': '<:key_M:1409612725843263698>', 'n': '<:key_N:1409612739684339732>',
+    'o': '<:key_O:1409612752041021550>', 'p': '<:key_P:1409612768042025082>',
+    'q': '<:key_Q:1409612783338918058>', 'r': '<:key_R:1409612799075680287>',
+    's': '<:key_S:1409612813814464533>', 't': '<:key_T:1409612827525644320>',
+    'u': '<:key_U:1409612841538945025>', 'v': '<:key_V:1409612853685518469>',
+    'w': '<:key_W:1409612867879309312>', 'x': '<:key_X:1409612881623777341>',
+    'y': '<:key_Y:1409612895054069760>', 'z': '<:key_Z:1409612925345206374>',
+    "'": '<:key_apostrophe:1409612478127669439>',
+    '-': '<:key_hyphen:1409612639285547018>'
+}
+
+# --- White Emojis for the Solved Word ---
+SOLVE_EMOJI_MAP = {
+    'a': '<:key_A2:1409612470464807014>', 'b': '<:key_B2:1409612503734030508>',
+    'c': '<:key_C2:1409612522163535932>', 'd': '<:key_D2:1409612538781499523>',
+    'e': '<:key_E2:1409612556343181463>', 'f': '<:key_F2:1409612573250289716>',
+    'g': '<:key_G2:1409612610449576107>', 'h': '<:key_H2:1409612630875701383>',
+    'i': '<:key_I2:1409612668805058752>', 'j': '<:key_J2:1409612683325608046>',
+    'k': '<:key_K2:1409612706230702131>', 'l': '<:key_L2:1409612716036853991>',
+    'm': '<:key_M2:1409612732138918000>', 'n': '<:key_N2:1409612746051551363>',
+    'o': '<:key_O2:1409612760202874973>', 'p': '<:key_P2:1409612774518030416>',
+    'q': '<:key_Q2:1409612790934671461>', 'r': '<:key_R2:1409612806008868934>',
+    's': '<:key_S2:1409612820227686561>', 't': '<:key_T2:1409612834580725921>',
+    'u': '<:key_U2:1409612847679410307>', 'v': '<:key_V2:1409612860270841936>',
+    'w': '<:key_W2:1409612875219075162>', 'x': '<:key_X2:1409612887953244231>',
+    'y': '<:key_Y2:1409612904411693126>', 'z': '<:key_Z2:1409612933431824434>',
+    "'": '<:key_apostrophe2:1409612486541312111>',
+    '-': '<:key_hyphen2:1409612647074234408>'
 }
 
 TRASH_TALK_LINES = (
@@ -2990,31 +3011,46 @@ TRASH_TALK_LINES = (
 
 _last_solved_prompt_info = {}
 
-def prompt_to_emojis(prompt: str) -> str:
-    """Converts a string prompt like 'ra' into a sequence of Discord emojis."""
-    emoji_string = ""
-    for char in prompt.lower():
-        # Get the emoji string for the character, or the character itself if it's not in our map
-        emoji_string += LETTER_EMOJI_MAP.get(char, char)
-    return emoji_string
 
-def word_to_emojis(word: str) -> str:
+def format_word_emojis(word: str, prompt: str = None) -> str:
     """
-    Converts a solved word into a sequence of letter emojis,
-    keeping hyphens and apostrophes as plain text.
+    Converts a word into a sequence of custom emojis with advanced highlighting.
+
+    - If only 'word' is provided, it uses the blue PROMPT_EMOJI_MAP.
+    - If 'word' and 'prompt' are provided, it uses the white SOLVE_EMOJI_MAP
+      and highlights the first occurrence of the prompt in blue.
     """
-    emoji_string = ""
-    for char in word.lower():
-        # --- THIS IS THE NEW LOGIC ---
-        # First, check if it's a special character we want to keep as-is.
-        if char in "-'":
-            emoji_string += char
-        # If not, try to get the custom emoji.
-        # If that fails, fall back to the regional indicator.
-        else:
-            emoji_string += LETTER_EMOJI_MAP.get(char, f":regional_indicator_{char}:")
-        # --- END OF NEW LOGIC ---
-    return emoji_string
+    word_lower = word.lower()
+
+    # --- SCENARIO 1: Just creating the blue prompt ---
+    if prompt is None:
+        return "".join(PROMPT_EMOJI_MAP.get(char, char) for char in word_lower)
+
+    # --- SCENARIO 2: Creating the highlighted solved word ---
+    prompt_lower = prompt.lower()
+    start_index = word_lower.find(prompt_lower)
+
+    # This should always find a match, but we check just in case.
+    if start_index == -1:
+        # Fallback if the prompt isn't found (shouldn't happen with valid solves)
+        return "".join(SOLVE_EMOJI_MAP.get(char, char) for char in word_lower)
+
+    end_index = start_index + len(prompt_lower)
+    emoji_string = []
+
+    # Part 1: Before the prompt (white)
+    for char in word_lower[:start_index]:
+        emoji_string.append(SOLVE_EMOJI_MAP.get(char, char))
+
+    # Part 2: The prompt itself (blue)
+    for char in word_lower[start_index:end_index]:
+        emoji_string.append(PROMPT_EMOJI_MAP.get(char, char))
+
+    # Part 3: After the prompt (white)
+    for char in word_lower[end_index:]:
+        emoji_string.append(SOLVE_EMOJI_MAP.get(char, char))
+
+    return "".join(emoji_string)
 
 def _calculate_valid_prompts_sync(dictionary: set) -> list:
     """
@@ -3146,8 +3182,8 @@ class DisclaimerView(ui.View):
 def create_word_game_embed(prompt: str, match_count: int, start_time: datetime) -> discord.Embed:
     """Creates the standard embed for the word mini-game prompt."""
     embed = discord.Embed(
-        # --- THIS IS THE ONLY LINE THAT CHANGES ---
-        title=f"<:logo:1409319111632224268> Prompt: {prompt_to_emojis(prompt)}",
+        # --- MODIFIED LINE ---
+        title=f"<:logo:1409319111632224268> Prompt: {format_word_emojis(prompt)}",
         description="Be the first to type a valid English word \ncontaining the substring above!",
         color=discord.Color.purple()
     )
