@@ -577,22 +577,17 @@ async def on_message(message):
                             await db.commit()
 
                             if delete_cursor.rowcount > 0:
-                                # --- START: NEW STREAK & RANKING LOGIC ---
+                                # --- START: CORRECTED STREAK & RANKING LOGIC ---
                                 _last_solved_prompt_info[message.channel.id] = [prompt, datetime.now(timezone.utc),
                                                                                 False]
                                 winner_id = message.author.id
 
-                                # --- Step 1: Fetch the previous streak state ---
                                 streak_cursor = await db.execute(
                                     "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE game_id = 1")
                                 last_streak_data = await streak_cursor.fetchone()
 
-                                last_solver_id = None
-                                old_streak = 0
-                                if last_streak_data:
-                                    last_solver_id, old_streak = last_streak_data
+                                last_solver_id, old_streak = (last_streak_data if last_streak_data else (None, 0))
 
-                                # --- Step 2: Determine streak outcome and update DB ---
                                 streak_message = ""
                                 if last_solver_id == winner_id:
                                     # STREAK CONTINUES
@@ -606,23 +601,23 @@ async def on_message(message):
                                 else:
                                     # STREAK IS BROKEN or NEW STREAK STARTS
                                     if old_streak >= 3:
-                                        # Announce the streak break
                                         try:
-                                            # Fetch the user who had the streak
                                             old_solver_user = bot.get_user(last_solver_id) or await bot.fetch_user(
                                                 last_solver_id)
                                             streak_message = f"{message.author.mention} broke {old_solver_user.mention}'s streak of **{old_streak}**! 💔"
                                         except discord.NotFound:
                                             streak_message = f"{message.author.mention} broke a streak of **{old_streak}**!"
 
-                                    # Update the DB with the new solver and reset streak to 1
                                     await db.execute("""
-                                                        INSERT OR REPLACE INTO word_minigame_state (game_id, last_solver_id, current_streak)
-                                                        VALUES (1, ?, 1)
-                                                    """, (winner_id,))
+                                                                    INSERT OR REPLACE INTO word_minigame_state (game_id, last_solver_id, current_streak)
+                                                                    VALUES (1, ?, 1)
+                                                                """, (winner_id,))
+
+                                # --- THE FIX ---
+                                # This single commit now handles both the UPDATE and the INSERT OR REPLACE.
                                 await db.commit()
 
-                                # (The existing ranking logic remains the same)
+                                # (The rest of the ranking/reply logic remains the same)
                                 current_data_cursor = await db.execute(
                                     "SELECT count FROM word_minigame_solves WHERE user_id = ?", (winner_id,))
                                 current_data = await current_data_cursor.fetchone()
@@ -632,16 +627,16 @@ async def on_message(message):
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
                                 old_rank = (await old_rank_cursor.fetchone())[0]
                                 await db.execute("""
-                                                    INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
-                                                    ON CONFLICT(user_id) DO UPDATE SET count = count + 1
-                                                """, (winner_id,))
-                                await db.commit()
+                                                                INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
+                                                                ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+                                                            """, (winner_id,))
+                                await db.commit()  # This commit is for the solves table and is correct.
+
                                 new_solves = current_solves + 1
                                 new_rank_cursor = await db.execute(
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
                                 new_rank = (await new_rank_cursor.fetchone())[0]
 
-                                # --- Step 3: Build the final reply message ---
                                 reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
                                              f"**{format_word_emojis(validation_input, prompt=prompt)}**\n\n"
                                              "Round ended!")
@@ -654,12 +649,9 @@ async def on_message(message):
                                     rank_change = old_rank - new_rank
                                     rank_msg = f"You moved up **{rank_change}** place{'s' if rank_change > 1 else ''}! You are now rank **#{new_rank}**! 📈"
 
-                                # Combine all message parts
                                 full_reply = reply_msg
-                                if rank_msg:
-                                    full_reply += f"\n{rank_msg}"
-                                if streak_message:
-                                    full_reply += f"\n{streak_message}"
+                                if rank_msg: full_reply += f"\n{rank_msg}"
+                                if streak_message: full_reply += f"\n{streak_message}"
 
                                 await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
                                 await asyncio.sleep(3)
@@ -748,6 +740,19 @@ async def _fetch_message_snapshot(channel: discord.TextChannel, reacted_message:
     # Return a dictionary with both pieces of data
     return {"text": indented_content, "image_url": first_image_url}
 
+
+@bot.command(name="resetstreakstate")
+async def reset_streak_state(ctx: commands.Context):
+    """(Admin-only) Manually clears the word game's streak state from the DB."""
+    if ctx.author.id not in DEVELOPER_IDS:
+        return await ctx.send("🚫 You do not have permission to use this command.")
+
+    async with aiosqlite.connect("server_data.db") as db:
+        await db.execute("DELETE FROM word_minigame_state WHERE game_id = 1")
+        await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?", (WORD_GAME_CHANNEL_ID,))
+        await db.commit()
+
+    await ctx.send("✅ Word game streak and active prompt state has been wiped. You can now start a new game.")
 
 @bot.event
 async def on_raw_reaction_add(payload):
