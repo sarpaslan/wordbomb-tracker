@@ -207,7 +207,7 @@ TICKET_CATEGORY_ID = 1395901776409923684
 DEVELOPER_ID = 265196052192165888
 
 # --- Word Bomb Mini-Game Constants ---
-WORD_GAME_CHANNEL_ID = 1409927566998900767
+WORD_GAME_CHANNEL_ID = 1409399526841782343
 
 WORDBOMB_API_TOKEN = os.getenv("WORDBOMB_API_TOKEN")
 WORDBOMB_API_BASE = "https://api.dictionary.wordbomb.io"
@@ -226,8 +226,6 @@ PROMPT_LENGTHS_WEIGHTS = {
 }
 RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
-
-bot.setup_hook = setup_hook
 
 @bot.event
 async def on_ready():
@@ -469,6 +467,8 @@ async def setup_hook():
     # but for simplicity, we'll focus on the main fix. Keeping them in a separate on_ready is fine.)
 
     print("[SUCCESS] Setup hook complete. Bot is fully operational.")
+
+bot.setup_hook = setup_hook
 
 @tasks.loop(hours=1)
 async def update_weekly_snapshot():
@@ -3781,7 +3781,7 @@ async def on_command_error(ctx, error):
     else:
         # Log unexpected errors without crashing the bot
         print(f"[ERROR] Unexpected error in command {ctx.command}: {error}")
-        
+
 @bot.event
 async def close():
     """This function is called when the bot is shutting down."""
