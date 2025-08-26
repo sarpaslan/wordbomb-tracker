@@ -207,6 +207,7 @@ DEVELOPER_ID = 265196052192165888
 
 # --- Word Bomb Mini-Game Constants ---
 WORD_GAME_CHANNEL_ID = 1409399526841782343
+PRACTICE_ROOM_COMMAND_CHANNEL_ID = 1409399526841782343
 
 WORDBOMB_API_TOKEN = os.getenv("WORDBOMB_API_TOKEN")
 WORDBOMB_API_BASE = "https://api.dictionary.wordbomb.io"
@@ -225,6 +226,8 @@ PROMPT_LENGTHS_WEIGHTS = {
 }
 RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
+
+PRACTICE_PROMPTS_CACHE = {}
 
 @bot.event
 async def on_ready():
@@ -255,22 +258,11 @@ async def on_ready():
     print("[INFO] aiohttp session created for API calls.")
 
     async with aiosqlite.connect("server_data.db") as db_sqlite:
-        cursor = await db_sqlite.execute("PRAGMA table_info(word_minigame_state)")
-        columns = [row[1] for row in await cursor.fetchall()]
+        await db_sqlite.execute("DROP TABLE IF EXISTS word_minigame_active")
+        print("[INFO] Dropped old 'word_minigame_active' table to apply new schema with creator_id.")
 
-        if "game_id" in columns:
-            print("[WARN] Old 'word_minigame_state' table detected. Performing one-time migration...")
-            try:
-                # Rename the old table as a backup, just in case.
-                await db_sqlite.execute("ALTER TABLE word_minigame_state RENAME TO word_minigame_state_old")
-                print("[INFO] Renamed old table to 'word_minigame_state_old'.")
-            except sqlite3.OperationalError as e:
-                # This can happen if _old already exists. We can safely ignore it and drop the main table.
-                if "already exists" in str(e):
-                    await db_sqlite.execute("DROP TABLE word_minigame_state")
-                    print("[INFO] Dropped conflicting 'word_minigame_state' table.")
-                else:
-                    raise e
+        ##REMOVE
+
         await db_sqlite.execute(
             "CREATE TABLE IF NOT EXISTS messages (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
         await db_sqlite.execute(
@@ -344,7 +336,10 @@ async def on_ready():
                 channel_id INTEGER PRIMARY KEY,
                 current_prompt TEXT NOT NULL,
                 message_id INTEGER NOT NULL,
-                start_timestamp TEXT NOT NULL
+                start_timestamp TEXT NOT NULL,
+                is_practice INTEGER NOT NULL DEFAULT 0,
+                sub_count INTEGER,
+                creator_id INTEGER -- The new column to track the user who created the room
             )
         """)
         await db_sqlite.execute("""
@@ -361,28 +356,36 @@ async def on_ready():
     await refresh_prompt_cache_logic()  # <-- ADD THIS AWAIT
     fetch_and_cache_prompts.start()
 
-    # --- Word Game Restart Resilience ---
-    print("[INFO] Checking for active word games from before restart...")
+    # --- ENHANCED: Word Game Restart Resilience ---
+    print("[INFO] Checking for all active word games from before restart...")
     async with aiosqlite.connect("server_data.db") as db:
-        cursor = await db.execute("SELECT channel_id, message_id FROM word_minigame_active")
+        # Fetch all game data, not just IDs
+        cursor = await db.execute(
+            "SELECT channel_id, message_id, is_practice, sub_count, creator_id FROM word_minigame_active")
         active_games = await cursor.fetchall()
-        for channel_id, message_id in active_games:
+
+        for channel_id, message_id, is_practice, sub_count, creator_id in active_games:
             channel = bot.get_channel(channel_id)
             if not channel:
-                # Channel was deleted while bot was offline, clean up the game
+                print(f"[WARN] Game channel/thread {channel_id} not found. Cleaning up from DB.")
                 await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?", (channel_id,))
-                await db.commit()
-                continue
+                continue  # Skip to the next game
             try:
-                # Check if the message still exists
+                # Check if the prompt message still exists
                 await channel.fetch_message(message_id)
-                print(f"[SUCCESS] Game in channel {channel_id} is still active.")
+                print(f"[SUCCESS] Game in '{channel.name}' ({channel_id}) is still active.")
             except discord.NotFound:
                 # The message was deleted while the bot was offline. Start a new round.
-                print(f"[WARN] Prompt message in {channel.name} was deleted while offline. Starting new round.")
-                await start_new_word_game_round(channel)
+                print(f"[WARN] Prompt message in '{channel.name}' was deleted while offline. Starting new round.")
+                # We pass all the game's original parameters to the start function
+                await start_new_word_game_round(
+                    channel,
+                    is_practice=bool(is_practice),
+                    sub_count=sub_count,
+                    creator_id=creator_id
+                )
             except discord.Forbidden:
-                print(f"[ERROR] Lacking permissions to check for prompt message in {channel.name}.")
+                print(f"[ERROR] Lacking permissions to check for prompt message in '{channel.name}'.")
 
     print("[INFO] Reconciling voice states on startup...")
     startup_time = datetime.utcnow()
@@ -418,6 +421,8 @@ async def on_ready():
     update_weekly_snapshot.start()
     bot.add_view(ApprovalView())
     bot.add_view(SuggestionStarterView())
+
+    check_and_delete_old_threads.start()
 
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
@@ -495,7 +500,14 @@ async def on_message(message):
     user_id = message.author.id
     now = time.time()
 
-    if message.channel.id not in EXCLUDED_CHANNEL_IDS:
+    if isinstance(message.channel, discord.Thread) and message.channel.parent_id == PRACTICE_ROOM_COMMAND_CHANNEL_ID:
+        # This is a practice room thread, so we skip all message counting logic for it.
+        # We do NOT return, because we still want the game logic below to run.
+        pass
+
+
+
+    elif message.channel.id not in EXCLUDED_CHANNEL_IDS:
         # Check if user sent another message within 3 seconds
         last_time = last_message_times.get(user_id, 0)
         if now - last_time >= 3:
@@ -558,134 +570,127 @@ async def on_message(message):
         else:
             pass
 
-    # --- Word Bomb Mini-Game Logic ---
-    if message.channel.id == WORD_GAME_CHANNEL_ID:
-        original_input = message.content
-        validation_input = original_input.replace(' ', '-') if ' ' in original_input else original_input
+    # --- Word Bomb Mini-Game Logic (Definitive Version) ---
+    async with aiosqlite.connect("server_data.db") as db:
+        # Step 1: Check if the message is in ANY active game channel (public or private thread)
+        game_cursor = await db.execute(
+            "SELECT current_prompt, start_timestamp, is_practice, sub_count, creator_id FROM word_minigame_active WHERE channel_id = ?",
+            (message.channel.id,)
+        )
+        game_data = await game_cursor.fetchone()
 
-        if len(validation_input) < MIN_WORD_LENGTH:
-            pass
-        else:
-            async with aiosqlite.connect("server_data.db") as db:
-                channel_id = message.channel.id
+        # Only proceed if a game is actually active in this channel
+        if game_data:
+            prompt, start_timestamp, is_practice, sub_count, creator_id = game_data
 
-                cursor = await db.execute(
-                    "SELECT current_prompt, start_timestamp FROM word_minigame_active WHERE channel_id = ?",
-                    (channel_id,)
-                )
-                game_data = await cursor.fetchone()
+            original_input = message.content
+            validation_input = original_input.replace(' ', '-') if ' ' in original_input else original_input
 
-                # --- PATH 1: A game is currently active (Winner's Path) ---
-                if game_data:
-                    prompt = game_data[0]
-                    if message.created_at > datetime.fromisoformat(game_data[1]).replace(tzinfo=timezone.utc):
-                        normalized_input = normalize_word(validation_input)  # Still needed for display
+            if len(validation_input) >= MIN_WORD_LENGTH and message.created_at > datetime.fromisoformat(
+                    start_timestamp).replace(tzinfo=timezone.utc):
+                normalized_input = normalize_word(validation_input)
+                contains_prompt = prompt in normalized_input
 
-                        # --- MODIFIED VALIDATION LOGIC ---
-                        # Step 1: Check if prompt is in the word (fast, local check)
-                        contains_prompt = prompt in normalized_input
+                if contains_prompt and await is_word_valid_api(validation_input):
+                    # --- VALID WORD SOLVED ---
+                    delete_cursor = await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?",
+                                                     (message.channel.id,))
+                    await db.commit()
 
-                        # Step 2: If it contains the prompt, check with the API (slower, network call)
-                        # We use `validation_input` here to preserve casing for unnormalized languages.
-                        if contains_prompt and await is_word_valid_api(validation_input):
-                            # The word is valid! The rest of the logic continues.
-                            delete_cursor = await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?",
-                                                             (channel_id,))
+                    if delete_cursor.rowcount > 0:
+                        # --- WINNER'S LOGIC ---
+
+                        reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n"
+                                     f"**{format_word_emojis(normalized_input, prompt=prompt)}**\n\n"
+                                     "Round ended!")
+
+                        full_reply = reply_msg
+
+                        # --- Conditional Rewards ---
+                        if not is_practice:
+                            winner_id = message.author.id
+                            channel_id = message.channel.id
+                            _last_solved_prompt_info[channel_id] = [prompt, datetime.now(timezone.utc), False,
+                                                                    winner_id]
+
+                            # (Streak and ranking logic)
+                            streak_cursor = await db.execute(
+                                "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE channel_id = ?",
+                                (channel_id,))
+                            last_streak_data = await streak_cursor.fetchone()
+                            last_solver_id, old_streak = (last_streak_data if last_streak_data else (None, 0))
+                            streak_message = ""
+                            if last_solver_id == winner_id:
+                                new_streak = old_streak + 1
+                                if new_streak > 3: streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! 🔥"
+                                await db.execute(
+                                    "UPDATE word_minigame_state SET current_streak = ? WHERE channel_id = ?",
+                                    (new_streak, channel_id))
+                            else:
+                                if old_streak >= 3:
+                                    try:
+                                        old_solver_user = bot.get_user(last_solver_id) or await bot.fetch_user(
+                                            last_solver_id)
+                                        streak_message = f"{message.author.mention} broke {old_solver_user.mention}'s streak of **{old_streak}**! 💔"
+                                    except discord.NotFound:
+                                        streak_message = f"{message.author.mention} broke a streak of **{old_streak}**!"
+                                await db.execute(
+                                    "INSERT OR REPLACE INTO word_minigame_state (channel_id, last_solver_id, current_streak) VALUES (?, ?, 1)",
+                                    (channel_id, winner_id))
                             await db.commit()
 
-                            if delete_cursor.rowcount > 0:
-                                # --- WINNER'S LOGIC ---
-                                winner_id = message.author.id
-                                _last_solved_prompt_info[channel_id] = [prompt, datetime.now(timezone.utc), False,
-                                                                        winner_id]
+                            current_data_cursor = await db.execute(
+                                "SELECT count FROM word_minigame_solves WHERE user_id = ?", (winner_id,))
+                            current_data = await current_data_cursor.fetchone()
+                            is_first_solve = current_data is None
+                            current_solves = 0 if is_first_solve else current_data[0]
+                            old_rank_cursor = await db.execute(
+                                "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
+                            old_rank = (await old_rank_cursor.fetchone())[0]
+                            await db.execute(
+                                "INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET count = count + 1",
+                                (winner_id,))
+                            await db.commit()
+                            new_solves = current_solves + 1
+                            new_rank_cursor = await db.execute(
+                                "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
+                            new_rank = (await new_rank_cursor.fetchone())[0]
+                            rank_msg = ""
+                            if is_first_solve:
+                                total_players_cursor = await db.execute("SELECT COUNT(*) FROM word_minigame_solves")
+                                total_players = (await total_players_cursor.fetchone())[0]
+                                rank_msg = f"You're on the board at rank **#{new_rank}** out of {total_players} players! 🎉"
+                            elif new_rank < old_rank:
+                                rank_change = old_rank - new_rank
+                                rank_msg = f"You moved up **{rank_change}** place{'s' if rank_change > 1 else ''}! You are now rank **#{new_rank}**! 📈"
 
-                                streak_cursor = await db.execute(
-                                    "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE channel_id = ?",
-                                    (channel_id,))
-                                last_streak_data = await streak_cursor.fetchone()
-                                last_solver_id, old_streak = (last_streak_data if last_streak_data else (None, 0))
+                            if rank_msg: full_reply += f"\n{rank_msg}"
+                            if streak_message: full_reply += f"\n{streak_message}"
 
-                                streak_message = ""
-                                if last_solver_id == winner_id:
-                                    new_streak = old_streak + 1
-                                    if new_streak > 3:
-                                        streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! 🔥"
-                                    await db.execute(
-                                        "UPDATE word_minigame_state SET current_streak = ? WHERE channel_id = ?",
-                                        (new_streak, channel_id))
-                                else:
-                                    if old_streak >= 3:
-                                        try:
-                                            old_solver_user = bot.get_user(last_solver_id) or await bot.fetch_user(
-                                                last_solver_id)
-                                            streak_message = f"{message.author.mention} broke {old_solver_user.mention}'s streak of **{old_streak}**! 💔"
-                                        except discord.NotFound:
-                                            streak_message = f"{message.author.mention} broke a streak of **{old_streak}**!"
+                        await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
+                        await asyncio.sleep(3)
 
-                                    await db.execute("""
-                                            INSERT OR REPLACE INTO word_minigame_state (channel_id, last_solver_id, current_streak)
-                                            VALUES (?, ?, 1)
-                                        """, (channel_id, winner_id))
+                        # Correctly start the next round, passing the creator_id
+                        await start_new_word_game_round(
+                            message.channel,
+                            is_practice=is_practice,
+                            sub_count=sub_count,
+                            creator_id=creator_id
+                        )
 
-                                await db.commit()
-
-                                current_data_cursor = await db.execute(
-                                    "SELECT count FROM word_minigame_solves WHERE user_id = ?", (winner_id,))
-                                current_data = await current_data_cursor.fetchone()
-                                is_first_solve = current_data is None
-                                current_solves = 0 if is_first_solve else current_data[0]
-                                old_rank_cursor = await db.execute(
-                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
-                                old_rank = (await old_rank_cursor.fetchone())[0]
-                                await db.execute("""
-                                        INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
-                                        ON CONFLICT(user_id) DO UPDATE SET count = count + 1
-                                    """, (winner_id,))
-                                await db.commit()
-                                new_solves = current_solves + 1
-                                new_rank_cursor = await db.execute(
-                                    "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
-                                new_rank = (await new_rank_cursor.fetchone())[0]
-
-                                # Use `normalized_input` for the final display for emoji compatibility
-                                reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
-                                             f"**{format_word_emojis(normalized_input, prompt=prompt)}**\n\n"
-                                             "Round ended!")
-                                rank_msg = ""
-                                if is_first_solve:
-                                    total_players_cursor = await db.execute("SELECT COUNT(*) FROM word_minigame_solves")
-                                    total_players = (await total_players_cursor.fetchone())[0]
-                                    rank_msg = f"You're on the board at rank **#{new_rank}** out of {total_players} players! 🎉"
-                                elif new_rank < old_rank:
-                                    rank_change = old_rank - new_rank
-                                    rank_msg = f"You moved up **{rank_change}** place{'s' if rank_change > 1 else ''}! You are now rank **#{new_rank}**! 📈"
-
-                                full_reply = reply_msg
-                                if rank_msg: full_reply += f"\n{rank_msg}"
-                                if streak_message: full_reply += f"\n{streak_message}"
-
-                                await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
-                                await asyncio.sleep(3)
-                                await start_new_word_game_round(message.channel)
-
-                # --- PATH 2: No active game (Late Solver's Path) ---
-                elif channel_id in _last_solved_prompt_info:
-                    last_prompt, solve_time, has_trash_talked, winner_id = _last_solved_prompt_info[channel_id]
-
-                    if message.author.id == winner_id:
-                        pass
-                    else:
-                        time_since_solve = (message.created_at - solve_time).total_seconds()
-                        if not has_trash_talked and time_since_solve < 0.5:
-
-                            # --- MODIFIED VALIDATION FOR "TOO SLOW" CHECK ---
-                            contains_prompt = last_prompt in normalize_word(validation_input)
-
-                            if contains_prompt and await is_word_valid_api(validation_input):
-                                _last_solved_prompt_info[channel_id][2] = True
-                                trash_talk_line = random.choice(TRASH_TALK_LINES)
-                                reply_text = trash_talk_line.format(mention=message.author.mention)
-                                await message.reply(reply_text, allowed_mentions=discord.AllowedMentions(users=False))
+                    elif not is_practice and message.channel.id in _last_solved_prompt_info:
+                        last_prompt, solve_time, has_trash_talked, winner_id = _last_solved_prompt_info[
+                            message.channel.id]
+                        if message.author.id != winner_id:
+                            time_since_solve = (message.created_at - solve_time).total_seconds()
+                            if not has_trash_talked and time_since_solve < 0.5:
+                                contains_prompt = last_prompt in normalize_word(validation_input)
+                                if contains_prompt and await is_word_valid_api(validation_input):
+                                    _last_solved_prompt_info[message.channel.id][2] = True
+                                    trash_talk_line = random.choice(TRASH_TALK_LINES)
+                                    reply_text = trash_talk_line.format(mention=message.author.mention)
+                                    await message.reply(reply_text,
+                                                        allowed_mentions=discord.AllowedMentions(users=False))
 
 
     await bot.process_commands(message)
@@ -3040,7 +3045,7 @@ async def daily(ctx: commands.Context):
             await main_message.reply(embed=streak_lost_embed)
 
 
-# wordbomb mini
+# wordbombmini
 async def refresh_prompt_cache_logic():
     """
     The core logic for fetching prompts from the API and updating the global cache.
@@ -3129,6 +3134,100 @@ def normalize_word(word: str) -> str:
     # Normalize unicode characters (e.g., é -> e)
     nfkd_form = unicodedata.normalize('NFKD', word)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+
+async def fetch_practice_prompts(sub_count: int) -> list:
+    """
+    Fetches 2 and 3-letter prompts from the API with a maximum solve count.
+    Uses the '/at-most' endpoint as specified.
+    """
+    # We can still cache the final result to avoid repeated calls for the same number.
+    if sub_count in PRACTICE_PROMPTS_CACHE:
+        return PRACTICE_PROMPTS_CACHE[sub_count]
+
+    print(f"[INFO] Fetching new practice prompts for sub_count at most {sub_count}")
+
+    all_prompts = []
+    try:
+        for length in [2, 3]:
+            # --- THE FIX: Use the correct '/at-most' endpoint and 'max' parameter as you specified ---
+            url = f"{WORDBOMB_API_BASE}/syllable/at-most?length={length}&max={sub_count}"
+
+            async with api_session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    for syllable in data.get("syllables", []):
+                        # Add the prompts directly, trusting the API's weighting.
+                        all_prompts.append((syllable['s'].lower(), syllable['c']))
+                else:
+                    # The warning now shows the correct endpoint name.
+                    print(
+                        f"[WARN] API call for practice prompts ('/at-most') failed (len={length}, max={sub_count}) with status: {response.status}")
+
+            await asyncio.sleep(0.5)  # Keep the polite delay between the two API calls.
+
+        if not all_prompts:
+            print(f"[WARN] The API returned no practice prompts for sub_count at most {sub_count}.")
+            PRACTICE_PROMPTS_CACHE[sub_count] = []
+            return []
+
+        random.shuffle(all_prompts)
+        PRACTICE_PROMPTS_CACHE[sub_count] = all_prompts
+        return all_prompts
+
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred during practice prompt fetching: {e}")
+        return []
+
+
+@tasks.loop(hours=1)
+async def check_and_delete_old_threads():
+    """Periodically checks for practice threads that are older than 24 hours and deletes them."""
+    print("[INFO] Running periodic check for old practice threads...")
+    # 24 hours ago from now
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    threads_to_delete = []
+    async with aiosqlite.connect("server_data.db") as db:
+        # Find all practice rooms where the last prompt was started before the cutoff time
+        cursor = await db.execute(
+            "SELECT channel_id FROM word_minigame_active WHERE is_practice = 1 AND start_timestamp < ?",
+            (cutoff_time.isoformat(),)
+        )
+        threads_to_delete = await cursor.fetchall()
+
+        if threads_to_delete:
+            # Get just the IDs
+            thread_ids = [row[0] for row in threads_to_delete]
+            # Create a placeholder string for the query, e.g., (?, ?, ?)
+            placeholders = ', '.join('?' for _ in thread_ids)
+
+            # Clean up the database records for all expired threads in one go
+            await db.execute(f"DELETE FROM word_minigame_active WHERE channel_id IN ({placeholders})", thread_ids)
+            await db.commit()
+            print(f"[INFO] Cleaned up {len(thread_ids)} expired practice rooms from the database.")
+
+    # Now, delete the actual Discord threads
+    for thread_id_tuple in threads_to_delete:
+        thread_id = thread_id_tuple[0]
+        try:
+            # Fetch the thread object. It might already be deleted.
+            thread = bot.get_channel(thread_id) or await bot.fetch_channel(thread_id)
+            if thread:
+                print(f"[INFO] Deleting expired practice thread: {thread.name} ({thread.id})")
+                await thread.delete()
+        except discord.NotFound:
+            # The thread was already deleted, which is fine.
+            print(f"[INFO] Tried to delete thread {thread_id}, but it was already gone.")
+        except discord.Forbidden:
+            print(f"[WARN] Lacked permissions to delete expired thread {thread_id}.")
+        except Exception as e:
+            print(f"[ERROR] An unexpected error occurred while deleting thread {thread_id}: {e}")
+
+
+@check_and_delete_old_threads.before_loop
+async def before_check_threads():
+    await bot.wait_until_ready()
 
 PROMPT_EMOJI_MAP = {
     'a': '<:key_A:1409612462227062824>', 'b': '<:key_B:1409612493784875070>',
@@ -3288,33 +3387,120 @@ def create_word_game_embed(prompt: str, match_count: int, start_time: datetime) 
     return embed
 
 
-async def start_new_word_game_round(channel: discord.TextChannel):
-    """Generates a new prompt, sends the embed, and saves the state to the database."""
-    if not VALID_PROMPTS:
-        await channel.send("`[ERROR] Cannot start a new round: No valid prompts are available.`")
+async def start_new_word_game_round(channel: discord.TextChannel | discord.Thread, is_practice: bool = False,
+                                    sub_count: int = None, creator_id: int = None):
+    """Generates a new prompt, now also storing the creator's ID for practice rooms."""
+    prompt, match_count = (None, 0)
+
+    if is_practice:
+        prompt_list = await fetch_practice_prompts(sub_count)
+        if prompt_list:
+            prompt, match_count = random.choice(prompt_list)
+    else:
+        prompt, match_count = get_new_prompt()
+
+    if not prompt:
+        await channel.send("`[ERROR] Could not find a suitable prompt.`")
         return
 
-    prompt, match_count = get_new_prompt()
     start_time = datetime.now(timezone.utc)
-
     embed = create_word_game_embed(prompt, match_count, start_time)
 
     try:
-        # --- THIS IS THE KEY CHANGE ---
-        # We now pass the view when sending the message
         prompt_message = await channel.send(embed=embed)
-        # --- END OF CHANGE ---
     except discord.Forbidden:
-        print(f"[ERROR] Cannot send messages in the word game channel ({channel.name}). Aborting.")
+        print(f"[ERROR] Cannot send messages in {channel.name}.")
         return
 
     async with aiosqlite.connect("server_data.db") as db:
         await db.execute("""
-            INSERT OR REPLACE INTO word_minigame_active (channel_id, current_prompt, message_id, start_timestamp)
-            VALUES (?, ?, ?, ?)
-        """, (channel.id, prompt, prompt_message.id, start_time.isoformat()))
+            INSERT OR REPLACE INTO word_minigame_active 
+            (channel_id, current_prompt, message_id, start_timestamp, is_practice, sub_count, creator_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (channel.id, prompt, prompt_message.id, start_time.isoformat(), int(is_practice), sub_count, creator_id))
         await db.commit()
-    print(f"[INFO] New word game round started in #{channel.name} with prompt '{prompt}'.")
+
+    if is_practice:
+        print(f"[INFO] New practice round started in thread '{channel.name}' with prompt '{prompt}'.")
+    else:
+        print(f"[INFO] New public game round started in #{channel.name} with prompt '{prompt}'.")
+
+@bot.command(name="createroom")
+async def createroom(ctx: commands.Context, sub_count: int = None):
+    """Creates a private practice thread, checking if one already exists for the user."""
+    if ctx.channel.id != PRACTICE_ROOM_COMMAND_CHANNEL_ID:
+        return
+
+    # --- NEW: Check for an existing active practice room for this user ---
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute(
+            "SELECT channel_id FROM word_minigame_active WHERE creator_id = ? AND is_practice = 1",
+            (ctx.author.id,)
+        )
+        existing_room = await cursor.fetchone()
+        if existing_room:
+            thread_id = existing_room[0]
+            return await ctx.send(f"❌ {ctx.author.mention}, you already have an active practice room here: <#{thread_id}>. Please `!close` it before creating a new one.")
+    # --- END of new check ---
+
+    if sub_count is None:
+        return await ctx.send("Please provide a sub count difficulty (e.g., `!createroom 100`).")
+    if not 10 <= sub_count <= 2000:
+        return await ctx.send("Please choose a sub count between 10 and 2,000.")
+
+    feedback_msg = await ctx.send(f"➡️ {ctx.author.mention}, fetching prompts and creating your private room...")
+
+    prompts = await fetch_practice_prompts(sub_count)
+    if not prompts:
+        return await feedback_msg.edit(content=f"❌ {ctx.author.mention}, I couldn't find any prompts with that difficulty.")
+
+    try:
+        thread = await ctx.message.create_thread(
+            name=f"🔵 Practice Room for {ctx.author.display_name}"
+        )
+        await feedback_msg.edit(content=f"✅ {ctx.author.mention}, your private practice room has been created: {thread.mention}")
+
+        welcome_embed = discord.Embed(
+            title=f"Welcome to your Practice Room!",
+            description=(
+                f"This is a private space for you to practice the Word Bomb game with prompts around a **{sub_count}** sub count.\n\n"
+                "**RULES:**\n"
+                "• Solves here do **not** count for leaderboards, streaks, or coins.\n"
+                "• The game works exactly like the public version.\n"
+                f"• This thread will automatically close after 24 hours of inactivity. You can also close it manually with `!close`."
+            ),
+            color=discord.Color.blue()
+        )
+        await thread.send(embed=welcome_embed)
+        # Start the first round in the new thread
+        await start_new_word_game_round(
+            thread,
+            is_practice=True,
+            sub_count=sub_count,
+            creator_id=ctx.author.id  # This was the missing piece
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Failed to create practice thread: {e}")
+        await feedback_msg.edit(content=f"❌ {ctx.author.mention}, an error occurred while trying to create your room.")
+
+
+@bot.command(name="close")
+async def close(ctx: commands.Context):
+    """Closes an active practice room thread."""
+    if not isinstance(ctx.channel, discord.Thread):
+        return # Ignore if not in a thread
+
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute("SELECT is_practice FROM word_minigame_active WHERE channel_id = ?", (ctx.channel.id,))
+        game_data = await cursor.fetchone()
+
+        if game_data and game_data[0] == 1: # Check if it's a practice room
+            await ctx.send("✅ This practice room will now be closed.")
+            await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?", (ctx.channel.id,))
+            await db.commit()
+            await asyncio.sleep(0.5)
+            await ctx.channel.delete()
 
 
 def is_specific_user(user_id: int):
