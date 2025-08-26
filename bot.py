@@ -596,7 +596,7 @@ async def on_message(message):
                     if delete_cursor.rowcount > 0:
                         # --- WINNER'S LOGIC ---
 
-                        reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n"
+                        reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
                                      f"**{format_word_emojis(normalized_input, prompt=prompt)}**\n\n"
                                      "Round ended!")
 
@@ -3423,11 +3423,11 @@ async def start_new_word_game_round(channel: discord.TextChannel | discord.Threa
 
 @bot.command(name="createroom")
 async def createroom(ctx: commands.Context, sub_count: int = None):
-    """Creates a private practice thread, checking if one already exists for the user."""
+    """Creates a private practice thread for the WordBomb mini-game."""
     if ctx.channel.id != PRACTICE_ROOM_COMMAND_CHANNEL_ID:
         return
 
-    # --- NEW: Check for an existing active practice room for this user ---
+    # --- Check for existing active room (this logic is correct and unchanged) ---
     async with aiosqlite.connect("server_data.db") as db:
         cursor = await db.execute(
             "SELECT channel_id FROM word_minigame_active WHERE creator_id = ? AND is_practice = 1",
@@ -3437,7 +3437,6 @@ async def createroom(ctx: commands.Context, sub_count: int = None):
         if existing_room:
             thread_id = existing_room[0]
             return await ctx.send(f"❌ {ctx.author.mention}, you already have an active practice room here: <#{thread_id}>. Please `!close` it before creating a new one.")
-    # --- END of new check ---
 
     if sub_count is None:
         return await ctx.send("Please provide a sub count difficulty (e.g., `!createroom 100`).")
@@ -3451,9 +3450,15 @@ async def createroom(ctx: commands.Context, sub_count: int = None):
         return await feedback_msg.edit(content=f"❌ {ctx.author.mention}, I couldn't find any prompts with that difficulty.")
 
     try:
-        thread = await ctx.message.create_thread(
-            name=f"🔵 Practice Room for {ctx.author.display_name}"
+        thread_type = discord.ChannelType.private_thread
+
+        thread = await ctx.channel.create_thread(
+            name=f"🔵 Practice Room for {ctx.author.display_name}",
+            type=thread_type
         )
+
+        await thread.add_user(ctx.author)
+
         await feedback_msg.edit(content=f"✅ {ctx.author.mention}, your private practice room has been created: {thread.mention}")
 
         welcome_embed = discord.Embed(
