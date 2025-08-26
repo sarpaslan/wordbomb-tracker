@@ -227,9 +227,22 @@ PROMPT_LENGTHS_WEIGHTS = {
 RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
+_has_run_once = False
+
+
 @bot.event
 async def on_ready():
-    global client, db, questions_collection, rejected_questions_collection, api_session
+    global _has_run_once, client, db, questions_collection, rejected_questions_collection, api_session
+    if _has_run_once:
+        print(f"[INFO] Bot reconnected as {bot.user}. Skipping setup.")
+        return
+
+    print(f"[INFO] Bot is starting up for the first time as {bot.user} ({bot.user.id})...")
+
+    # --- Step 1: Create long-lived resources ---
+    api_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"})
+    print("[INFO] aiohttp session created for API calls.")
+
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -408,67 +421,12 @@ async def on_ready():
     bot.add_view(TicketCloseView())
 
     # 2. Add the new slash command group to the bot's command tree.
+    _has_run_once = True
 
     print("-" * 20)
     print(f"[SUCCESS] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
     print("-" * 20)
 
-
-async def setup_hook():
-    """This function is called when the bot is preparing to start."""
-    global client, db, questions_collection, rejected_questions_collection, api_session
-    print("[INFO] Running setup hook...")
-
-    # --- 1. Create the persistent API session ---
-    # This is the ideal place to create long-lived resources.
-    api_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"})
-    print("[INFO] aiohttp session created for API calls.")
-
-    # --- 2. Connect to MongoDB ---
-    print("[INFO] Initializing MongoDB connection...")
-    try:
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-        db = client.questions
-        questions_collection = db.approved
-        rejected_questions_collection = db.rejected
-        await client.admin.command('ismaster')
-        print("[SUCCESS] MongoDB connection established.")
-    except Exception as e:
-        print(f"[ERROR] Failed to connect to MongoDB: {e}")
-        # If DB fails, we might not want to continue, so consider raising an error or shutting down.
-        return
-
-    # --- 3. Await the bot to be fully ready before doing things that need it ---
-    # This is a special method inside setup_hook.
-    await bot.wait_until_ready()
-
-    # --- 4. Now that the bot is logged in, we can set up things that need bot data ---
-    global POINT_LOGS_CHANNEL
-    POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
-    if POINT_LOGS_CHANNEL:
-        print(f"[DEBUG] POINT_LOGS_CHANNEL loaded: {POINT_LOGS_CHANNEL.name} ({POINT_LOGS_CHANNEL.id})")
-    else:
-        print("[ERROR] POINT_LOGS_CHANNEL could not be loaded.")
-
-    # Register persistent views
-    bot.add_view(ApprovalView())
-    bot.add_view(SuggestionStarterView())
-    bot.add_view(TicketStarterView())
-    bot.add_view(TicketCloseView())
-    print("[INFO] Persistent UI views registered.")
-
-    # --- 5. Perform initial prompt fetch and start loops ---
-    print("[INFO] Performing initial prompt fetch before startup...")
-    await refresh_prompt_cache_logic()
-    fetch_and_cache_prompts.start()
-    update_weekly_snapshot.start()
-
-    # (Your database table creation and voice state reconciliation can be moved here too,
-    # but for simplicity, we'll focus on the main fix. Keeping them in a separate on_ready is fine.)
-
-    print("[SUCCESS] Setup hook complete. Bot is fully operational.")
-
-bot.setup_hook = setup_hook
 
 @tasks.loop(hours=1)
 async def update_weekly_snapshot():
@@ -3781,13 +3739,6 @@ async def on_command_error(ctx, error):
     else:
         # Log unexpected errors without crashing the bot
         print(f"[ERROR] Unexpected error in command {ctx.command}: {error}")
-
-@bot.event
-async def close():
-    """This function is called when the bot is shutting down."""
-    if api_session:
-        await api_session.close()
-        print("[INFO] aiohttp session has been closed.")
 
 
 bot.run(token)
