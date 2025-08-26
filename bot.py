@@ -577,10 +577,10 @@ async def on_message(message):
                             await db.commit()
 
                             if delete_cursor.rowcount > 0:
-                                # --- START: CORRECTED STREAK & RANKING LOGIC ---
-                                _last_solved_prompt_info[message.channel.id] = [prompt, datetime.now(timezone.utc),
-                                                                                False]
+
                                 winner_id = message.author.id
+                                _last_solved_prompt_info[message.channel.id] = [prompt, datetime.now(timezone.utc),
+                                                                                False, winner_id]
 
                                 streak_cursor = await db.execute(
                                     "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE game_id = 1")
@@ -638,7 +638,8 @@ async def on_message(message):
                                 new_rank = (await new_rank_cursor.fetchone())[0]
 
                                 reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
-                                             f"**{format_word_emojis(validation_input, prompt=prompt)}**\n\n"
+                                             # Use `normalized_input` here for a clean, consistent display
+                                             f"**{format_word_emojis(normalized_input, prompt=prompt)}**\n\n"
                                              "Round ended!")
                                 rank_msg = ""
                                 if is_first_solve:
@@ -659,23 +660,28 @@ async def on_message(message):
 
                 # --- PATH 2: No active game (Late Solver's Path) ---
                 elif message.channel.id in _last_solved_prompt_info:
-                    last_prompt, solve_time, has_trash_talked = _last_solved_prompt_info[message.channel.id]
-                    time_since_solve = (message.created_at - solve_time).total_seconds()
+                    # Unpack the list, now including the winner's ID
+                    last_prompt, solve_time, has_trash_talked, winner_id = _last_solved_prompt_info[message.channel.id]
 
-                    if not has_trash_talked and time_since_solve < 0.5:
-                        # We also use the `validation_input` for the "too slow" check
-                        normalized_input = normalize_word(validation_input)
-                        is_valid_but_late = (
-                                last_prompt in normalized_input and
-                                normalized_input in WORD_GAME_DICTIONARY and
-                                all(c.isalpha() or c in "-'" for c in normalized_input)
-                        )
+                    # CHANGE #3 (Fix A): Add a check to ignore the winner
+                    if message.author.id == winner_id:
+                        pass  # Silently ignore if the original winner sends another message
+                    else:
+                        time_since_solve = (message.created_at - solve_time).total_seconds()
+                        if not has_trash_talked and time_since_solve < 0.5:
 
-                        if is_valid_but_late:
-                            _last_solved_prompt_info[message.channel.id][2] = True
-                            trash_talk_line = random.choice(TRASH_TALK_LINES)
-                            reply_text = trash_talk_line.format(mention=message.author.mention)
-                            await message.reply(reply_text, allowed_mentions=discord.AllowedMentions(users=False))
+                            normalized_input = normalize_word(validation_input)
+                            is_valid_but_late = (
+                                    last_prompt in normalized_input and
+                                    normalized_input in WORD_GAME_DICTIONARY and
+                                    all(c.isalpha() or c in "-'" for c in normalized_input)
+                            )
+
+                            if is_valid_but_late:
+                                _last_solved_prompt_info[message.channel.id][2] = True
+                                trash_talk_line = random.choice(TRASH_TALK_LINES)
+                                reply_text = trash_talk_line.format(mention=message.author.mention)
+                                await message.reply(reply_text, allowed_mentions=discord.AllowedMentions(users=False))
 
 
     await bot.process_commands(message)
