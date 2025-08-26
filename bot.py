@@ -17,16 +17,11 @@ import unicodedata
 import collections
 import functools
 from collections import defaultdict, deque
+import aiohttp
 
 # Load token
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
-
-WORDBOMB_SERVER_TOKEN = os.getenv('WORDBOMB_SERVER_TOKEN')
-
-WORDBOMB_API_BASE = os.getenv("WORDBOMB_API_BASE")
-BILL_CREATE_ENDPOINT = os.getenv("WORDBOMB_BILL_CREATE_ENDPOINT")
-WALLET_ENDPOINT = os.getenv("WORDBOMB_WALLET_ENDPOINT")
 
 # --- New Constants ---
 # Ask Hector for this connection string and put it in your .env file
@@ -212,29 +207,31 @@ TICKET_CATEGORY_ID = 1395901776409923684
 DEVELOPER_ID = 265196052192165888
 
 # --- Word Bomb Mini-Game Constants ---
-WORD_GAME_CHANNEL_ID = 1409399526841782343
-MIN_WORD_LENGTH = 3
-PROMPT_MATCH_COUNT_RANGE = (30, 1000)
-DICTIONARY_FILE_PATH = "dictionary.txt"
-PROMPT_LENGTHS_WEIGHTS = {
-    2: 65,
-    3: 35,
-    4: 20,
-    'hyphen': 10  # New category for prompts containing a hyphen
-}
+WORD_GAME_CHANNEL_ID = 1409927566998900767
 
-# --- Word Bomb Mini-Game Globals ---
-# These will be populated at startup
-WORD_GAME_DICTIONARY = set()
+WORDBOMB_API_TOKEN = os.getenv("WORDBOMB_API_TOKEN")
+WORDBOMB_API_BASE = "https://api.dictionary.wordbomb.io"
+MIN_WORD_LENGTH = 3 # We can still use this for a quick pre-check
+
+# This will now be a dictionary of lists, keyed by prompt length
+# e.g., {2: [('en', 500), ...], 3: [('ing', 800), ...]}
 VALID_PROMPTS = {}
 
-RECENT_PROMPT_MEMORY_SIZE = 2000 # The bot will not repeat any of the last 200 prompts.
+api_session = None
 
+PROMPT_LENGTHS_WEIGHTS = {
+    2: 70,  # 2-letter prompts are most common
+    3: 25,  # 3-letter prompts are less common
+    4: 5    # 4-letter prompts are rare
+}
+RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
+
+bot.setup_hook = setup_hook
 
 @bot.event
 async def on_ready():
-    global client, db, questions_collection, rejected_questions_collection
+    global client, db, questions_collection, rejected_questions_collection, api_session
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -257,7 +254,8 @@ async def on_ready():
     else:
         print("[ERROR] POINT_LOGS_CHANNEL could not be loaded.")
 
-    print(f"[DEBUG] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
+    api_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"})
+    print("[INFO] aiohttp session created for API calls.")
 
     async with aiosqlite.connect("server_data.db") as db_sqlite:
         await db_sqlite.execute(
@@ -338,7 +336,7 @@ async def on_ready():
         """)
         await db_sqlite.execute("""
             CREATE TABLE IF NOT EXISTS word_minigame_state (
-                game_id INTEGER PRIMARY KEY, -- This will always be 1 to ensure only one row
+                channel_id INTEGER PRIMARY KEY,
                 last_solver_id INTEGER NOT NULL,
                 current_streak INTEGER NOT NULL
             )
@@ -346,7 +344,9 @@ async def on_ready():
         await db_sqlite.commit()
 
     # --- Load Word Game Assets ---
-    await load_word_game_dictionary()
+    print("[INFO] Performing initial prompt fetch before startup...")
+    await refresh_prompt_cache_logic()  # <-- ADD THIS AWAIT
+    fetch_and_cache_prompts.start()
 
     # --- Word Game Restart Resilience ---
     print("[INFO] Checking for active word games from before restart...")
@@ -409,12 +409,66 @@ async def on_ready():
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
 
-    bot.add_view(DisclaimerView())
-
     # 2. Add the new slash command group to the bot's command tree.
 
-    print("[SUCCESS] Bot is ready and persistent views are registered.")
+    print("-" * 20)
+    print(f"[SUCCESS] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
+    print("-" * 20)
 
+
+async def setup_hook():
+    """This function is called when the bot is preparing to start."""
+    global client, db, questions_collection, rejected_questions_collection, api_session
+    print("[INFO] Running setup hook...")
+
+    # --- 1. Create the persistent API session ---
+    # This is the ideal place to create long-lived resources.
+    api_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"})
+    print("[INFO] aiohttp session created for API calls.")
+
+    # --- 2. Connect to MongoDB ---
+    print("[INFO] Initializing MongoDB connection...")
+    try:
+        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+        db = client.questions
+        questions_collection = db.approved
+        rejected_questions_collection = db.rejected
+        await client.admin.command('ismaster')
+        print("[SUCCESS] MongoDB connection established.")
+    except Exception as e:
+        print(f"[ERROR] Failed to connect to MongoDB: {e}")
+        # If DB fails, we might not want to continue, so consider raising an error or shutting down.
+        return
+
+    # --- 3. Await the bot to be fully ready before doing things that need it ---
+    # This is a special method inside setup_hook.
+    await bot.wait_until_ready()
+
+    # --- 4. Now that the bot is logged in, we can set up things that need bot data ---
+    global POINT_LOGS_CHANNEL
+    POINT_LOGS_CHANNEL = bot.get_channel(1392585590532341782)
+    if POINT_LOGS_CHANNEL:
+        print(f"[DEBUG] POINT_LOGS_CHANNEL loaded: {POINT_LOGS_CHANNEL.name} ({POINT_LOGS_CHANNEL.id})")
+    else:
+        print("[ERROR] POINT_LOGS_CHANNEL could not be loaded.")
+
+    # Register persistent views
+    bot.add_view(ApprovalView())
+    bot.add_view(SuggestionStarterView())
+    bot.add_view(TicketStarterView())
+    bot.add_view(TicketCloseView())
+    print("[INFO] Persistent UI views registered.")
+
+    # --- 5. Perform initial prompt fetch and start loops ---
+    print("[INFO] Performing initial prompt fetch before startup...")
+    await refresh_prompt_cache_logic()
+    fetch_and_cache_prompts.start()
+    update_weekly_snapshot.start()
+
+    # (Your database table creation and voice state reconciliation can be moved here too,
+    # but for simplicity, we'll focus on the main fix. Keeping them in a separate on_ready is fine.)
+
+    print("[SUCCESS] Setup hook complete. Bot is fully operational.")
 
 @tasks.loop(hours=1)
 async def update_weekly_snapshot():
@@ -546,18 +600,19 @@ async def on_message(message):
             pass
 
     # --- Word Bomb Mini-Game Logic ---
-    if message.channel.id == WORD_GAME_CHANNEL_ID and not message.author.bot:
+    if message.channel.id == WORD_GAME_CHANNEL_ID:
         original_input = message.content
-        # If the input has spaces, replace them with hyphens for validation. Otherwise, use the original input.
         validation_input = original_input.replace(' ', '-') if ' ' in original_input else original_input
 
         if len(validation_input) < MIN_WORD_LENGTH:
             pass
         else:
             async with aiosqlite.connect("server_data.db") as db:
+                channel_id = message.channel.id
+
                 cursor = await db.execute(
                     "SELECT current_prompt, start_timestamp FROM word_minigame_active WHERE channel_id = ?",
-                    (WORD_GAME_CHANNEL_ID,)
+                    (channel_id,)
                 )
                 game_data = await cursor.fetchone()
 
@@ -565,42 +620,41 @@ async def on_message(message):
                 if game_data:
                     prompt = game_data[0]
                     if message.created_at > datetime.fromisoformat(game_data[1]).replace(tzinfo=timezone.utc):
-                        normalized_input = normalize_word(validation_input)
-                        is_valid = (
-                                prompt in normalized_input and
-                                normalized_input in WORD_GAME_DICTIONARY and
-                                all(c.isalpha() or c in "-'" for c in normalized_input)
-                        )
+                        normalized_input = normalize_word(validation_input)  # Still needed for display
 
-                        if is_valid:
+                        # --- MODIFIED VALIDATION LOGIC ---
+                        # Step 1: Check if prompt is in the word (fast, local check)
+                        contains_prompt = prompt in normalized_input
+
+                        # Step 2: If it contains the prompt, check with the API (slower, network call)
+                        # We use `validation_input` here to preserve casing for unnormalized languages.
+                        if contains_prompt and await is_word_valid_api(validation_input):
+                            # The word is valid! The rest of the logic continues.
                             delete_cursor = await db.execute("DELETE FROM word_minigame_active WHERE channel_id = ?",
-                                                             (WORD_GAME_CHANNEL_ID,))
+                                                             (channel_id,))
                             await db.commit()
 
                             if delete_cursor.rowcount > 0:
-
+                                # --- WINNER'S LOGIC ---
                                 winner_id = message.author.id
-                                _last_solved_prompt_info[message.channel.id] = [prompt, datetime.now(timezone.utc),
-                                                                                False, winner_id]
+                                _last_solved_prompt_info[channel_id] = [prompt, datetime.now(timezone.utc), False,
+                                                                        winner_id]
 
                                 streak_cursor = await db.execute(
-                                    "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE game_id = 1")
+                                    "SELECT last_solver_id, current_streak FROM word_minigame_state WHERE channel_id = ?",
+                                    (channel_id,))
                                 last_streak_data = await streak_cursor.fetchone()
-
                                 last_solver_id, old_streak = (last_streak_data if last_streak_data else (None, 0))
 
                                 streak_message = ""
                                 if last_solver_id == winner_id:
-                                    # STREAK CONTINUES
                                     new_streak = old_streak + 1
                                     if new_streak > 3:
                                         streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! 🔥"
-
                                     await db.execute(
-                                        "UPDATE word_minigame_state SET current_streak = ? WHERE game_id = 1",
-                                        (new_streak,))
+                                        "UPDATE word_minigame_state SET current_streak = ? WHERE channel_id = ?",
+                                        (new_streak, channel_id))
                                 else:
-                                    # STREAK IS BROKEN or NEW STREAK STARTS
                                     if old_streak >= 3:
                                         try:
                                             old_solver_user = bot.get_user(last_solver_id) or await bot.fetch_user(
@@ -610,15 +664,12 @@ async def on_message(message):
                                             streak_message = f"{message.author.mention} broke a streak of **{old_streak}**!"
 
                                     await db.execute("""
-                                                                    INSERT OR REPLACE INTO word_minigame_state (game_id, last_solver_id, current_streak)
-                                                                    VALUES (1, ?, 1)
-                                                                """, (winner_id,))
+                                            INSERT OR REPLACE INTO word_minigame_state (channel_id, last_solver_id, current_streak)
+                                            VALUES (?, ?, 1)
+                                        """, (channel_id, winner_id))
 
-                                # --- THE FIX ---
-                                # This single commit now handles both the UPDATE and the INSERT OR REPLACE.
                                 await db.commit()
 
-                                # (The rest of the ranking/reply logic remains the same)
                                 current_data_cursor = await db.execute(
                                     "SELECT count FROM word_minigame_solves WHERE user_id = ?", (winner_id,))
                                 current_data = await current_data_cursor.fetchone()
@@ -628,18 +679,17 @@ async def on_message(message):
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (current_solves,))
                                 old_rank = (await old_rank_cursor.fetchone())[0]
                                 await db.execute("""
-                                                                INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
-                                                                ON CONFLICT(user_id) DO UPDATE SET count = count + 1
-                                                            """, (winner_id,))
-                                await db.commit()  # This commit is for the solves table and is correct.
-
+                                        INSERT INTO word_minigame_solves (user_id, count) VALUES (?, 1)
+                                        ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+                                    """, (winner_id,))
+                                await db.commit()
                                 new_solves = current_solves + 1
                                 new_rank_cursor = await db.execute(
                                     "SELECT COUNT(*) + 1 FROM word_minigame_solves WHERE count > ?", (new_solves,))
                                 new_rank = (await new_rank_cursor.fetchone())[0]
 
+                                # Use `normalized_input` for the final display for emoji compatibility
                                 reply_msg = (f"🎊 {message.author.mention} solved it with: 🎊\n\n"
-                                             # Use `normalized_input` here for a clean, consistent display
                                              f"**{format_word_emojis(normalized_input, prompt=prompt)}**\n\n"
                                              "Round ended!")
                                 rank_msg = ""
@@ -660,26 +710,20 @@ async def on_message(message):
                                 await start_new_word_game_round(message.channel)
 
                 # --- PATH 2: No active game (Late Solver's Path) ---
-                elif message.channel.id in _last_solved_prompt_info:
-                    # Unpack the list, now including the winner's ID
-                    last_prompt, solve_time, has_trash_talked, winner_id = _last_solved_prompt_info[message.channel.id]
+                elif channel_id in _last_solved_prompt_info:
+                    last_prompt, solve_time, has_trash_talked, winner_id = _last_solved_prompt_info[channel_id]
 
-                    # CHANGE #3 (Fix A): Add a check to ignore the winner
                     if message.author.id == winner_id:
-                        pass  # Silently ignore if the original winner sends another message
+                        pass
                     else:
                         time_since_solve = (message.created_at - solve_time).total_seconds()
                         if not has_trash_talked and time_since_solve < 0.5:
 
-                            normalized_input = normalize_word(validation_input)
-                            is_valid_but_late = (
-                                    last_prompt in normalized_input and
-                                    normalized_input in WORD_GAME_DICTIONARY and
-                                    all(c.isalpha() or c in "-'" for c in normalized_input)
-                            )
+                            # --- MODIFIED VALIDATION FOR "TOO SLOW" CHECK ---
+                            contains_prompt = last_prompt in normalize_word(validation_input)
 
-                            if is_valid_but_late:
-                                _last_solved_prompt_info[message.channel.id][2] = True
+                            if contains_prompt and await is_word_valid_api(validation_input):
+                                _last_solved_prompt_info[channel_id][2] = True
                                 trash_talk_line = random.choice(TRASH_TALK_LINES)
                                 reply_text = trash_talk_line.format(mention=message.author.mention)
                                 await message.reply(reply_text, allowed_mentions=discord.AllowedMentions(users=False))
@@ -3038,6 +3082,88 @@ async def daily(ctx: commands.Context):
 
 
 # wordbomb mini
+async def refresh_prompt_cache_logic():
+    """
+    The core logic for fetching prompts from the API and updating the global cache.
+    This can be called directly on startup or by the timed task.
+    """
+    global VALID_PROMPTS
+    if not WORDBOMB_API_TOKEN:
+        print("[ERROR] WORDBOMB_API_TOKEN is not set. Cannot fetch prompts.")
+        return
+
+    print("[INFO] Starting prompt cache refresh...")
+    headers = {"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"}
+
+    fetch_params = [
+        (2, 100), (2, 256), (2, 512),
+        (3, 100), (3, 256), (3, 512),
+        (4, 256), (4, 512),
+    ]
+
+    temp_prompts = {2: set(), 3: set(), 4: set()}
+
+    try:
+        for length, max_solves in fetch_params:
+            url = f"{WORDBOMB_API_BASE}/syllable/at-most?length={length}&max={max_solves}"
+            async with api_session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    for syllable in data.get("syllables", []):
+                        temp_prompts[length].add((syllable['s'].lower(), syllable['c']))
+                else:
+                    print(
+                        f"[WARN] API call for prompts (len={length}, max={max_solves}) failed with status: {response.status}")
+
+        new_valid_prompts = {
+            length: list(prompts)
+            for length, prompts in temp_prompts.items() if prompts
+        }
+
+        VALID_PROMPTS = new_valid_prompts
+        total = sum(len(p) for p in VALID_PROMPTS.values())
+        print(f"[SUCCESS] Prompt cache refreshed. Loaded {total} unique prompts.")
+
+    except aiohttp.ClientConnectorError as e:
+        print(f"[ERROR] Connection error during prompt fetch: {e}")
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred during prompt fetching: {e}")
+
+
+@tasks.loop(hours=4)
+async def fetch_and_cache_prompts():
+    """The timed task that periodically calls the refresh logic."""
+    await refresh_prompt_cache_logic()
+
+
+@fetch_and_cache_prompts.before_loop
+async def before_fetch_prompts():
+    await bot.wait_until_ready()  # Wait for the bot to be logged in
+
+
+async def is_word_valid_api(word: str) -> bool:
+    """
+    Checks if a word exists in any language via the WordBomb API.
+    Does NOT normalize the word before checking.
+    """
+    if not api_session:  # Safety check
+        print("[ERROR] api_session is not initialized. Cannot validate word.")
+        return False
+
+    url = f"{WORDBOMB_API_BASE}/word/check?word={word}"
+    try:
+        async with api_session.get(url) as response:
+            if response.status == 200:
+                data = await response.json()
+                # The word is valid if the 'languages' list is not empty
+                return len(data.get("languages", [])) > 0
+            else:
+                # API returned an error (e.g., 404), so the word is likely invalid
+                return False
+    except Exception as e:
+        print(f"[ERROR] An error occurred during word validation for '{word}': {e}")
+        return False
+
 def normalize_word(word: str) -> str:
     """Normalizes a word for validation: lowercase, NFKD unicode, strips diacritics."""
     word = word.lower().strip()
@@ -3130,94 +3256,6 @@ def format_word_emojis(word: str, prompt: str = None) -> str:
 
     return "".join(emoji_string)
 
-
-def _calculate_valid_prompts_sync(dictionary: set) -> dict:
-    """
-    (Synchronous) Calculates valid prompts, categorizing them by length (2, 3, 4)
-    and separately for prompts containing hyphens.
-    """
-    print("[INFO] [Executor] Starting intensive prompt calculation with hyphen categorization...")
-
-    # Initialize a dictionary to hold all categories defined in our weights
-    valid_prompts_by_category = {key: [] for key in PROMPT_LENGTHS_WEIGHTS}
-
-    # We need one master counter for all substrings
-    substring_counts = collections.Counter()
-
-    # Define the integer lengths we are interested in for substring generation
-    int_lengths_to_scan = [k for k in PROMPT_LENGTHS_WEIGHTS if isinstance(k, int)]
-
-    # --- Step 1: Count all possible substrings first ---
-    print(f"[INFO] [Executor] Scanning for all substrings of lengths: {int_lengths_to_scan}")
-    for word in dictionary:
-        for length in int_lengths_to_scan:
-            if len(word) >= length:
-                unique_subs_for_word = {
-                    sub
-                    for i in range(len(word) - length + 1)
-                    if "'" not in (sub := word[i:i + length])  # We still exclude apostrophe prompts
-                }
-                substring_counts.update(unique_subs_for_word)
-
-    print(f"[INFO] [Executor] Counted {len(substring_counts)} unique substrings. Now categorizing and filtering...")
-
-    # --- Step 2: Categorize and filter the counted substrings ---
-    for sub, count in substring_counts.items():
-        # First, check if the prompt is common/rare enough
-        if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]:
-            # Now, categorize it
-            if '-' in sub:
-                # If it has a hyphen, it goes into the special 'hyphen' category
-                valid_prompts_by_category['hyphen'].append((sub, count))
-            elif len(sub) in valid_prompts_by_category:
-                # Otherwise, it goes into its length category
-                valid_prompts_by_category[len(sub)].append((sub, count))
-
-    # --- Step 3: Log the final counts for each category ---
-    for category, prompts in valid_prompts_by_category.items():
-        print(f"[SUCCESS] [Executor] Found {len(prompts)} valid prompts for category '{category}'.")
-
-    return valid_prompts_by_category
-
-
-async def load_word_game_dictionary():
-    """
-    Loads the dictionary and offloads the heavy prompt calculation to a thread
-    to avoid blocking the bot's event loop.
-    """
-    global WORD_GAME_DICTIONARY, VALID_PROMPTS
-    print("[INFO] Loading WordBomb mini-game dictionary...")
-    try:
-        with open(DICTIONARY_FILE_PATH, 'r', encoding='utf-8') as f:
-            words = {normalize_word(line.strip()) for line in f if len(line.strip()) >= MIN_WORD_LENGTH}
-
-        WORD_GAME_DICTIONARY = {w for w in words if all(c.isalpha() or c in "-'" for c in w)}
-        print(f"[SUCCESS] Loaded {len(WORD_GAME_DICTIONARY)} valid words into memory.")
-
-        if not WORD_GAME_DICTIONARY:
-            print("[ERROR] Dictionary is empty after loading. Cannot calculate prompts.")
-            return
-
-        # --- THIS IS THE KEY CHANGE ---
-        # Run the blocking, CPU-intensive task in a separate thread to prevent freezing
-        loop = asyncio.get_running_loop()
-        task = functools.partial(_calculate_valid_prompts_sync, WORD_GAME_DICTIONARY)
-        VALID_PROMPTS = await loop.run_in_executor(None, task)
-        # --- END OF CHANGE ---
-
-        if not VALID_PROMPTS:
-            print("[ERROR] No valid prompts found! Check your dictionary or prompt count range.")
-        else:
-            print(f"[SUCCESS] Pre-calculation complete. Found {len(VALID_PROMPTS)} valid prompts.")
-
-    except FileNotFoundError:
-        print(f"[ERROR] CRITICAL: The dictionary file '{DICTIONARY_FILE_PATH}' was not found.")
-        WORD_GAME_DICTIONARY = set()
-        VALID_PROMPTS = []
-    except Exception as e:
-        print(f"[ERROR] An unexpected error occurred while loading the dictionary: {e}")
-
-
 @bot.event
 async def on_raw_message_delete(payload):
     """Handles the case where a moderator accidentally deletes the active prompt message."""
@@ -3244,58 +3282,36 @@ async def on_raw_message_delete(payload):
 
 def get_new_prompt():
     """
-    Selects a new random prompt, ensuring it has not been used in the last
-    RECENT_PROMPT_MEMORY_SIZE rounds.
+    Selects a new random prompt from the API cache using weighted lengths,
+    and ensuring it has not been used recently.
     """
     if not VALID_PROMPTS:
         return None, 0
 
-    available_lengths = [length for length, prompts in VALID_PROMPTS.items() if prompts]
+    available_lengths = [length for length, prompts in VALID_PROMPTS.items() if
+                         prompts and length in PROMPT_LENGTHS_WEIGHTS]
     if not available_lengths:
         return None, 0
 
     weights = [PROMPT_LENGTHS_WEIGHTS[length] for length in available_lengths]
 
-    # --- NEW ANTI-REPEAT LOGIC ---
-
-    # Try up to 10 times to find a unique prompt before giving up (a safety measure)
-    for _ in range(10):
-        # 1. Pick a length and a prompt like before
+    for _ in range(10):  # Try 10 times to find a unique prompt
         chosen_length = random.choices(available_lengths, weights=weights, k=1)[0]
+
+        # Ensure there are prompts for the chosen length before proceeding
+        if not VALID_PROMPTS.get(chosen_length):
+            continue
+
         prompt, match_count = random.choice(VALID_PROMPTS[chosen_length])
 
-        # 2. Check if the chosen prompt is in our recent memory
         if prompt not in _recent_prompts:
-            # 3. If it's a fresh prompt, add it to our memory and return it
             _recent_prompts.append(prompt)
             return prompt, match_count
 
-    # 4. Fallback: If we failed to find a unique prompt after 10 tries (very rare),
-    # just return the last one we picked to avoid crashing.
+    # Fallback if a unique prompt isn't found
     print("[WARN] Could not find a unique prompt after 10 attempts. A repeat may occur.")
-    return prompt, match_count
+    return random.choice(VALID_PROMPTS[random.choice(available_lengths)])
 
-
-class DisclaimerView(ui.View):
-    def __init__(self):
-        # timeout=None makes the button persistent across bot restarts
-        super().__init__(timeout=None)
-
-    @ui.button(label="", style=discord.ButtonStyle.secondary, emoji="⚠️", custom_id="wordgame_disclaimer_btn")
-    async def disclaimer_button(self, interaction: discord.Interaction, button: ui.Button):
-        """When the disclaimer button is clicked, this function sends an ephemeral message."""
-
-        disclaimer_text = (
-            "**Dictionary Information**\n\n"
-            "Please be aware that the dictionary used by this bot for the mini-game is currently different from the one used in the main Word Bomb game. "
-            "These will be synced in a future update.\n\n"
-            "In the meantime, this may cause some discrepancies:\n"
-            "• Some valid in-game words may not be accepted here.\n"
-            "• The sub count for a prompt may not be perfectly accurate.\n\n"
-            "Thank you for your understanding!"
-        )
-
-        await interaction.response.send_message(disclaimer_text, ephemeral=True)
 
 def create_word_game_embed(prompt: str, match_count: int, start_time: datetime) -> discord.Embed:
     """Creates the standard embed for the word mini-game prompt."""
@@ -3327,7 +3343,7 @@ async def start_new_word_game_round(channel: discord.TextChannel):
     try:
         # --- THIS IS THE KEY CHANGE ---
         # We now pass the view when sending the message
-        prompt_message = await channel.send(embed=embed, view=DisclaimerView())
+        prompt_message = await channel.send(embed=embed)
         # --- END OF CHANGE ---
     except discord.Forbidden:
         print(f"[ERROR] Cannot send messages in the word game channel ({channel.name}). Aborting.")
@@ -3352,19 +3368,17 @@ def is_specific_user(user_id: int):
 async def start_word_game(ctx: commands.Context):
     """(Admin-only) Starts the first round of the word mini-game."""
     DEVELOPER_IDS = {265196052192165888, 849827666064048178}
-    # Use a more reliable admin check
     if ctx.author.id not in DEVELOPER_IDS:
         return await ctx.send("🚫 You do not have permission to use this command.")
 
     if ctx.channel.id != WORD_GAME_CHANNEL_ID:
         return await ctx.send(f"This command can only be used in the designated game channel.")
 
-    # --- NEW, CRUCIAL CHECK ---
-    # Give the admin direct feedback if the prompt list is empty
     if not VALID_PROMPTS:
+        # --- MODIFIED ERROR MESSAGE ---
         return await ctx.send(
             "❌ **Cannot start game:** No valid prompts were loaded on startup.\n"
-            "Please check the console logs for errors related to `dictionary.txt` or prompt calculation."
+            "Please check the console logs for API connection errors."
         )
 
     await ctx.send("✅ Starting the first round of the word game...")
@@ -3767,6 +3781,13 @@ async def on_command_error(ctx, error):
     else:
         # Log unexpected errors without crashing the bot
         print(f"[ERROR] Unexpected error in command {ctx.command}: {error}")
+        
+@bot.event
+async def close():
+    """This function is called when the bot is shutting down."""
+    if api_session:
+        await api_session.close()
+        print("[INFO] aiohttp session has been closed.")
 
 
 bot.run(token)
