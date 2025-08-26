@@ -136,6 +136,7 @@ EXCLUDED_CHANNEL_IDS = {
     1342836273819418737,  # pt-BR suggest words channel
     1390240204459085844,  # nl suggest words channel
     1356433831498088502,  # mc-MC suggest words channel
+    1409399526841782343,  # prompts channel
 }
 
 voice_states = {}
@@ -593,7 +594,7 @@ async def on_message(message):
                                     # STREAK CONTINUES
                                     new_streak = old_streak + 1
                                     if new_streak > 3:
-                                        streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! 🔥"
+                                        streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! <:combo:1409924145466179685>"
 
                                     await db.execute(
                                         "UPDATE word_minigame_state SET current_streak = ? WHERE game_id = 1",
