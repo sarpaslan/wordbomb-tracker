@@ -216,9 +216,10 @@ MIN_WORD_LENGTH = 3
 PROMPT_MATCH_COUNT_RANGE = (30, 1000)
 DICTIONARY_FILE_PATH = "dictionary.txt"
 PROMPT_LENGTHS_WEIGHTS = {
-    2: 65,  # 2-letter prompts have a "weight" of 65 (most common)
-    3: 25,  # 3-letter prompts have a "weight" of 25 (less common)
-    4: 10   # 4-letter prompts have a "weight" of 10 (least common)
+    2: 65,
+    3: 25,
+    4: 10,
+    'hyphen': 5  # New category for prompts containing a hyphen
 }
 
 # --- Word Bomb Mini-Game Globals ---
@@ -226,7 +227,7 @@ PROMPT_LENGTHS_WEIGHTS = {
 WORD_GAME_DICTIONARY = set()
 VALID_PROMPTS = {}
 
-RECENT_PROMPT_MEMORY_SIZE = 200 # The bot will not repeat any of the last 200 prompts.
+RECENT_PROMPT_MEMORY_SIZE = 2000 # The bot will not repeat any of the last 200 prompts.
 
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
@@ -3119,38 +3120,51 @@ def format_word_emojis(word: str, prompt: str = None) -> str:
 
 def _calculate_valid_prompts_sync(dictionary: set) -> dict:
     """
-    (Synchronous) Calculates valid prompts for multiple lengths (2, 3, 4) and
-    returns them in a dictionary keyed by length.
+    (Synchronous) Calculates valid prompts, categorizing them by length (2, 3, 4)
+    and separately for prompts containing hyphens.
     """
-    print("[INFO] [Executor] Starting intensive prompt calculation for multiple lengths...")
+    print("[INFO] [Executor] Starting intensive prompt calculation with hyphen categorization...")
 
-    # Initialize a dictionary to hold prompts categorized by length
-    # e.g., {2: [('en', 5000), ...], 3: [('ing', 8000), ...]}
-    valid_prompts_by_length = {length: [] for length in PROMPT_LENGTHS_WEIGHTS}
+    # Initialize a dictionary to hold all categories defined in our weights
+    valid_prompts_by_category = {key: [] for key in PROMPT_LENGTHS_WEIGHTS}
 
-    # We iterate through each desired length
-    for length in PROMPT_LENGTHS_WEIGHTS.keys():
-        print(f"[INFO] [Executor] Calculating all substrings of length {length}...")
-        substring_counts = collections.Counter()
-        for word in dictionary:
-            # Generate unique substrings of the current length for this word
-            unique_subs_for_word = {
-                sub
-                for i in range(len(word) - length + 1)
-                if "'" not in (sub := word[i:i + length])
-            }
-            substring_counts.update(unique_subs_for_word)
+    # We need one master counter for all substrings
+    substring_counts = collections.Counter()
 
-        print(f"[INFO] [Executor] Found {len(substring_counts)} unique substrings of length {length}. Filtering...")
+    # Define the integer lengths we are interested in for substring generation
+    int_lengths_to_scan = [k for k in PROMPT_LENGTHS_WEIGHTS if isinstance(k, int)]
 
-        # Filter the results for this length and add to our main dictionary
-        for sub, count in substring_counts.items():
-            if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]:
-                valid_prompts_by_length[length].append((sub, count))
+    # --- Step 1: Count all possible substrings first ---
+    print(f"[INFO] [Executor] Scanning for all substrings of lengths: {int_lengths_to_scan}")
+    for word in dictionary:
+        for length in int_lengths_to_scan:
+            if len(word) >= length:
+                unique_subs_for_word = {
+                    sub
+                    for i in range(len(word) - length + 1)
+                    if "'" not in (sub := word[i:i + length])  # We still exclude apostrophe prompts
+                }
+                substring_counts.update(unique_subs_for_word)
 
-        print(f"[SUCCESS] [Executor] Found {len(valid_prompts_by_length[length])} valid prompts of length {length}.")
+    print(f"[INFO] [Executor] Counted {len(substring_counts)} unique substrings. Now categorizing and filtering...")
 
-    return valid_prompts_by_length
+    # --- Step 2: Categorize and filter the counted substrings ---
+    for sub, count in substring_counts.items():
+        # First, check if the prompt is common/rare enough
+        if PROMPT_MATCH_COUNT_RANGE[0] <= count <= PROMPT_MATCH_COUNT_RANGE[1]:
+            # Now, categorize it
+            if '-' in sub:
+                # If it has a hyphen, it goes into the special 'hyphen' category
+                valid_prompts_by_category['hyphen'].append((sub, count))
+            elif len(sub) in valid_prompts_by_category:
+                # Otherwise, it goes into its length category
+                valid_prompts_by_category[len(sub)].append((sub, count))
+
+    # --- Step 3: Log the final counts for each category ---
+    for category, prompts in valid_prompts_by_category.items():
+        print(f"[SUCCESS] [Executor] Found {len(prompts)} valid prompts for category '{category}'.")
+
+    return valid_prompts_by_category
 
 
 async def load_word_game_dictionary():
