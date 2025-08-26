@@ -744,6 +744,7 @@ async def _fetch_message_snapshot(channel: discord.TextChannel, reacted_message:
 @bot.command(name="resetstreakstate")
 async def reset_streak_state(ctx: commands.Context):
     """(Admin-only) Manually clears the word game's streak state from the DB."""
+    DEVELOPER_IDS = [849827666064048178]
     if ctx.author.id not in DEVELOPER_IDS:
         return await ctx.send("🚫 You do not have permission to use this command.")
 
