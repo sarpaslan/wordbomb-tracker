@@ -594,7 +594,7 @@ async def on_message(message):
                                     # STREAK CONTINUES
                                     new_streak = old_streak + 1
                                     if new_streak > 3:
-                                        streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! <:combo:1409924145466179685>"
+                                        streak_message = f"{message.author.mention} is on a **{new_streak}** round streak! <:key_A:1409612462227062824>"
 
                                     await db.execute(
                                         "UPDATE word_minigame_state SET current_streak = ? WHERE game_id = 1",
