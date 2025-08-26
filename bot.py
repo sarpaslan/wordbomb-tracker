@@ -14,8 +14,7 @@ import motor.motor_asyncio
 import asyncio
 import math
 import unicodedata
-import collections
-import functools
+import sqlite3
 from collections import defaultdict, deque
 import aiohttp
 
@@ -227,22 +226,9 @@ PROMPT_LENGTHS_WEIGHTS = {
 RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
-_has_run_once = False
-
-
 @bot.event
 async def on_ready():
-    global _has_run_once, client, db, questions_collection, rejected_questions_collection, api_session
-    if _has_run_once:
-        print(f"[INFO] Bot reconnected as {bot.user}. Skipping setup.")
-        return
-
-    print(f"[INFO] Bot is starting up for the first time as {bot.user} ({bot.user.id})...")
-
-    # --- Step 1: Create long-lived resources ---
-    api_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {WORDBOMB_API_TOKEN}"})
-    print("[INFO] aiohttp session created for API calls.")
-
+    global client, db, questions_collection, rejected_questions_collection, api_session
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -269,6 +255,22 @@ async def on_ready():
     print("[INFO] aiohttp session created for API calls.")
 
     async with aiosqlite.connect("server_data.db") as db_sqlite:
+        cursor = await db_sqlite.execute("PRAGMA table_info(word_minigame_state)")
+        columns = [row[1] for row in await cursor.fetchall()]
+
+        if "game_id" in columns:
+            print("[WARN] Old 'word_minigame_state' table detected. Performing one-time migration...")
+            try:
+                # Rename the old table as a backup, just in case.
+                await db_sqlite.execute("ALTER TABLE word_minigame_state RENAME TO word_minigame_state_old")
+                print("[INFO] Renamed old table to 'word_minigame_state_old'.")
+            except sqlite3.OperationalError as e:
+                # This can happen if _old already exists. We can safely ignore it and drop the main table.
+                if "already exists" in str(e):
+                    await db_sqlite.execute("DROP TABLE word_minigame_state")
+                    print("[INFO] Dropped conflicting 'word_minigame_state' table.")
+                else:
+                    raise e
         await db_sqlite.execute(
             "CREATE TABLE IF NOT EXISTS messages (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
         await db_sqlite.execute(
@@ -421,7 +423,6 @@ async def on_ready():
     bot.add_view(TicketCloseView())
 
     # 2. Add the new slash command group to the bot's command tree.
-    _has_run_once = True
 
     print("-" * 20)
     print(f"[SUCCESS] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
