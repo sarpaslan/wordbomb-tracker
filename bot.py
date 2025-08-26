@@ -258,10 +258,6 @@ async def on_ready():
     print("[INFO] aiohttp session created for API calls.")
 
     async with aiosqlite.connect("server_data.db") as db_sqlite:
-        await db_sqlite.execute("DROP TABLE IF EXISTS word_minigame_active")
-        print("[INFO] Dropped old 'word_minigame_active' table to apply new schema with creator_id.")
-
-        ##REMOVE
 
         await db_sqlite.execute(
             "CREATE TABLE IF NOT EXISTS messages (user_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
