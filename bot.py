@@ -216,10 +216,10 @@ MIN_WORD_LENGTH = 3
 PROMPT_MATCH_COUNT_RANGE = (30, 1000)
 DICTIONARY_FILE_PATH = "dictionary.txt"
 PROMPT_LENGTHS_WEIGHTS = {
-    5: 65,
-    6: 35,
-    7: 20,
-    'hyphen': 15  # New category for prompts containing a hyphen
+    2: 65,
+    3: 35,
+    4: 20,
+    'hyphen': 10  # New category for prompts containing a hyphen
 }
 
 # --- Word Bomb Mini-Game Globals ---
