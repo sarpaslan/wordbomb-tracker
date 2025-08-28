@@ -192,8 +192,7 @@ active_baccarat_games = {}
 active_roulette_games = {}
 active_coinflips = set()
 
-MAX_PLAYERS_PER_TABLE = 5  # This logic can be handled differently or kept if you wish
-SHOE_RESHUFFLE_THRESHOLD = 0.25  # This is fine to keep
+SHOE_RESHUFFLE_THRESHOLD = 0.05  # This is fine to keep
 
 BASE_DAILY_REWARD = 2500
 DAILY_STREAK_MULTIPLIER = 1.05
@@ -224,7 +223,7 @@ PROMPT_LENGTHS_WEIGHTS = {
     3: 25,  # 3-letter prompts are less common
     4: 5    # 4-letter prompts are rare
 }
-RECENT_PROMPT_MEMORY_SIZE = 200 # Avoid repeating the last 200 prompts
+RECENT_PROMPT_MEMORY_SIZE = 2000 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
 PRACTICE_PROMPTS_CACHE = {}
@@ -664,7 +663,8 @@ async def on_message(message):
                             if streak_message: full_reply += f"\n{streak_message}"
 
                         await message.reply(full_reply, allowed_mentions=discord.AllowedMentions(users=False))
-                        await asyncio.sleep(3)
+                        if not is_practice:
+                            await asyncio.sleep(3)
 
                         # Correctly start the next round, passing the creator_id
                         await start_new_word_game_round(
@@ -2125,7 +2125,7 @@ class BlackjackGame:
 
     def deal_card(self, hand):
         """Deals a single card from the shoe to a specified hand."""
-        if len(self.shoe) < self.max_shoe_size * 0.25:
+        if len(self.shoe) < self.max_shoe_size * SHOE_RESHUFFLE_THRESHOLD:
             self.shoe = self._create_shoe(4)
         card = self.shoe.pop()
         hand.append(card)
