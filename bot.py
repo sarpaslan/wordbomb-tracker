@@ -226,9 +226,14 @@ _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
 
 PRACTICE_PROMPTS_CACHE = {}
 
+STATUS_PANEL_CHANNEL_ID = 1412105214625972364
+STATUS_API_URL = "https://api.wordbomb.io/api/status"
+
+_status_panel_message = None
+
 @bot.event
 async def on_ready():
-    global client, db, questions_collection, rejected_questions_collection, api_session
+    global client, db, questions_collection, rejected_questions_collection, api_session, _status_panel_message
     print("[INFO] Initializing MongoDB connection...")
     try:
         client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -386,6 +391,25 @@ async def on_ready():
             except discord.Forbidden:
                 print(f"[ERROR] Lacking permissions to check for prompt message in '{channel.name}'.")
 
+    print("[INFO] Setting up the API status panel...")
+    status_channel = bot.get_channel(STATUS_PANEL_CHANNEL_ID)
+    if status_channel:
+        # Search the last 10 messages to find our panel
+        async for message in status_channel.history(limit=10):
+            if message.author.id == bot.user.id:
+                _status_panel_message = message
+                print(f"[INFO] Found existing status panel message with ID: {message.id}")
+                break
+        if not _status_panel_message:
+            print("[INFO] No existing status panel found, creating a new one...")
+            try:
+                placeholder_embed = discord.Embed(title="API Status", description="Initializing...")
+                _status_panel_message = await status_channel.send(embed=placeholder_embed)
+            except discord.Forbidden:
+                print(f"[ERROR] Cannot send messages in the status panel channel ({STATUS_PANEL_CHANNEL_ID}). Feature disabled.")
+    else:
+        print(f"[ERROR] Status panel channel ({STATUS_PANEL_CHANNEL_ID}) not found. Feature disabled.")
+
     print("[INFO] Reconciling voice states on startup...")
     startup_time = datetime.utcnow()
     current_vc_users = set()
@@ -425,6 +449,9 @@ async def on_ready():
 
     bot.add_view(TicketStarterView())
     bot.add_view(TicketCloseView())
+    if _status_panel_message:
+        if not update_status_panel.is_running():
+            update_status_panel.start()
 
     # 2. Add the new slash command group to the bot's command tree.
 
@@ -3569,6 +3596,92 @@ async def start_word_game(ctx: commands.Context):
 
     await ctx.send("✅ Starting the first round of the word game...")
     await start_new_word_game_round(ctx.channel)
+
+
+@tasks.loop(minutes=6)
+async def update_status_panel():
+    """Fetches API status and updates the persistent embed."""
+    global _status_panel_message
+    if not _status_panel_message:
+        print("[ERROR] Status panel message object is not set. Cannot update.")
+        return
+
+    print("[INFO] Updating status panel...")
+    
+    # Define a helper map for emojis and colors
+    status_map = {
+        "operational": {"emoji": "🟢", "color": discord.Color.green()},
+        "degraded_performance": {"emoji": "🟡", "color": discord.Color.gold()},
+        "partial_outage": {"emoji": "🟠", "color": discord.Color.orange()},
+        "major_outage": {"emoji": "🔴", "color": discord.Color.red()},
+    }
+    default_status = {"emoji": "⚪", "color": discord.Color.light_grey()}
+
+    try:
+        async with api_session.get(STATUS_API_URL) as response:
+            if response.status == 200:
+                data = await response.json()
+                
+                # --- Build the Embed from API Data ---
+                overall_status = data.get("overall", "unknown").lower()
+                status_info = status_map.get(overall_status, default_status)
+                
+                embed = discord.Embed(
+                    title=f"{status_info['emoji']} Word Bomb API Status",
+                    description=f"Overall status: **{overall_status.replace('_', ' ').title()}**",
+                    color=status_info['color']
+                )
+
+                for service in data.get("services", []):
+                    service_status = service.get("status", "unknown").lower()
+                    service_info = status_map.get(service_status, default_status)
+                    
+                    value = (
+                        f"{service_info['emoji']} {service_status.replace('_', ' ').title()}\n"
+                        f"**Response Time:** `{service.get('responseTime', 'N/A')}ms`"
+                    )
+                    embed.add_field(name=service.get("name", "Unknown Service"), value=value, inline=True)
+
+                # Parse and set the timestamp
+                last_updated_str = data.get("lastUpdated", "").replace("Z", "+00:00")
+                if last_updated_str:
+                    embed.timestamp = datetime.fromisoformat(last_updated_str)
+                    
+            else:
+                # Handle API errors
+                embed = discord.Embed(
+                    title="🔴 API Status Unknown",
+                    description=f"Failed to fetch status from the API. Received HTTP status code `{response.status}`.",
+                    color=discord.Color.dark_red(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+
+    except aiohttp.ClientConnectorError as e:
+        print(f"[ERROR] Connection error while fetching API status: {e}")
+        embed = discord.Embed(
+            title="🔴 API Status Unknown",
+            description="Could not connect to the Word Bomb API. The service may be offline.",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.now(timezone.utc)
+        )
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred in update_status_panel: {e}")
+        return # Don't update the message on an unexpected error
+
+    try:
+        await _status_panel_message.edit(embed=embed)
+        print("[SUCCESS] Status panel updated.")
+    except discord.NotFound:
+        print("[ERROR] The status panel message was deleted. It will be recreated on next bot restart.")
+        _status_panel_message = None # Clear the message object
+        update_status_panel.stop() # Stop the loop to prevent spamming errors
+    except discord.Forbidden:
+        print(f"[ERROR] Lacking permissions to edit messages in the status panel channel.")
+        update_status_panel.stop()
+
+@update_status_panel.before_loop
+async def before_update_status_panel():
+    await bot.wait_until_ready()
 
 @bot.command(name="resetstreak")
 async def resetstreak(ctx: commands.Context, member: discord.Member = None):
