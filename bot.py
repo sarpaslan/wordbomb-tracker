@@ -1119,6 +1119,12 @@ async def on_voice_state_update(member, before, after):
                                     if member.guild.me.top_role > role and member.guild.me.guild_permissions.manage_roles:
                                         await member.add_roles(role)
                                         print(f"[DEBUG] Gave Voice Warrior role to {member.name}")
+                            if row and row[0] >= 1800000:
+                                role = discord.utils.get(member.guild.roles, name="Voice Ambassador")
+                                if role and role not in member.roles:
+                                    if member.guild.me.top_role > role and member.guild.me.guild_permissions.manage_roles:
+                                        await member.add_roles(role)
+                                        print(f"[DEBUG] Gave Voice Ambassador role to {member.name}")
 
                     # 4. Clean up the temporary active session record.
                     await db.execute("DELETE FROM active_voice_sessions WHERE user_id = ?", (member.id,))
