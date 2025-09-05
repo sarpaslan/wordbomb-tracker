@@ -1733,11 +1733,17 @@ class ApprovalView(ui.View):
     @ui.button(label='Approve', style=discord.ButtonStyle.green, custom_id='question_approve')
     async def approve_button(self, interaction: discord.Interaction, button: ui.Button):
         language_mod_role = discord.utils.get(interaction.guild.roles, name="Language Moderator")
-        # ... (all your existing approve_button code remains here) ...
-        if language_mod_role not in interaction.user.roles and interaction.user.id != 849827666064048178:
+        language_mod_star_role = discord.utils.get(interaction.guild.roles, name="Language Moderator *")
+
+        has_permission = (language_mod_role and language_mod_role in interaction.user.roles) or \
+                         (language_mod_star_role and language_mod_star_role in interaction.user.roles) or \
+                         interaction.user.id == 849827666064048178
+
+        if not has_permission:
             await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
                                                     ephemeral=True)
             return
+        
         original_embed = interaction.message.embeds[0]
         try:
             locale = next(field.value for field in original_embed.fields if field.name == "Locale").strip('`')
@@ -1773,9 +1779,16 @@ class ApprovalView(ui.View):
     @ui.button(label='Edit', style=discord.ButtonStyle.secondary, custom_id='question_edit')
     async def edit_button(self, interaction: discord.Interaction, button: ui.Button):
         language_mod_role = discord.utils.get(interaction.guild.roles, name="Language Moderator")
-        if language_mod_role not in interaction.user.roles and interaction.user.id != 849827666064048178:
-            return await interaction.response.send_message("❌ You do not have permission to edit suggestions.",
-                                                           ephemeral=True)
+        language_mod_star_role = discord.utils.get(interaction.guild.roles, name="Language Moderator *")
+
+        has_permission = (language_mod_role and language_mod_role in interaction.user.roles) or \
+                         (language_mod_star_role and language_mod_star_role in interaction.user.roles) or \
+                         interaction.user.id == 849827666064048178
+
+        if not has_permission:
+            await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
+                                                    ephemeral=True)
+            return
 
         # 1. Parse the data from the current embed on the message
         original_embed = interaction.message.embeds[0]
@@ -1821,10 +1834,17 @@ class ApprovalView(ui.View):
     @ui.button(label='Decline', style=discord.ButtonStyle.red, custom_id='question_decline')
     async def decline_button(self, interaction: discord.Interaction, button: ui.Button):
         language_mod_role = discord.utils.get(interaction.guild.roles, name="Language Moderator")
-        if language_mod_role not in interaction.user.roles and interaction.user.id != 849827666064048178:
-            await interaction.response.send_message("❌ You do not have permission to decline suggestions.",
+        language_mod_star_role = discord.utils.get(interaction.guild.roles, name="Language Moderator *")
+
+        has_permission = (language_mod_role and language_mod_role in interaction.user.roles) or \
+                         (language_mod_star_role and language_mod_star_role in interaction.user.roles) or \
+                         interaction.user.id == 849827666064048178
+
+        if not has_permission:
+            await interaction.response.send_message("❌ You do not have permission to approve suggestions.",
                                                     ephemeral=True)
             return
+        
         original_embed = interaction.message.embeds[0]
         if rejected_questions_collection is not None:
             try:
