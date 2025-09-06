@@ -3453,7 +3453,7 @@ def create_word_game_embed(prompt: str, match_count: int, start_time: datetime) 
     embed = discord.Embed(
         # --- MODIFIED LINE ---
         title=f"<:logo:1409319111632224268> Prompt: {format_word_emojis(prompt)}",
-        description="Be the first to type a valid English word \ncontaining the substring above!",
+        description="Be the first to type a valid word in any \nlanguage containing the substring above!",
         color=discord.Color.purple()
     )
 
