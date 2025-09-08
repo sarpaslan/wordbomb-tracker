@@ -3766,7 +3766,7 @@ async def setup_role_button(ctx: commands.Context):
 
     embed = discord.Embed(
         title="📢 Get Notified for Game Updates",
-        description="Click the button below to get the **Game Updates** role.\n\nYou'll be pinged whenever there's an important announcement about our games!",
+        description="Click the button below to get the **Game Updates** role.\n\nYou'll be pinged whenever there's a game update!",
         color=discord.Color.blue()
     )
 
