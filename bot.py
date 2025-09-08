@@ -231,6 +231,10 @@ STATUS_API_URL = "https://api.wordbomb.io/api/status"
 
 _status_panel_message = None
 
+
+ROLE_BUTTON_CHANNEL_ID = 1345408094632415324
+GAME_UPDATES_ROLE_ID = 1414412843931144283
+
 @bot.event
 async def on_ready():
     global client, db, questions_collection, rejected_questions_collection, api_session, _status_panel_message
@@ -444,6 +448,7 @@ async def on_ready():
     update_weekly_snapshot.start()
     bot.add_view(ApprovalView())
     bot.add_view(SuggestionStarterView())
+    bot.add_view(RoleButtonView())
 
     check_and_delete_old_threads.start()
 
@@ -3709,6 +3714,68 @@ async def update_status_panel():
 async def before_update_status_panel():
     await bot.wait_until_ready()
 
+
+class RoleButtonView(ui.View):
+    def __init__(self):
+        # timeout=None makes the view persistent
+        super().__init__(timeout=None)
+
+    @ui.button(label="Notify Me of Game Updates", style=discord.ButtonStyle.secondary, emoji="📢", custom_id="game_updates_role_btn")
+    async def role_button(self, interaction: discord.Interaction, button: ui.Button):
+        # 1. Defer the response to give the bot time to process
+        await interaction.response.defer(ephemeral=True)
+
+        # 2. Get the role object from the server
+        role = interaction.guild.get_role(GAME_UPDATES_ROLE_ID)
+        if not role:
+            print(f"[ERROR] Could not find the Game Updates role with ID {GAME_UPDATES_ROLE_ID}")
+            await interaction.followup.send("An error occurred: The role could not be found. Please contact an admin.", ephemeral=True)
+            return
+
+        # 3. Check if the user already has the role
+        user_has_role = any(r.id == GAME_UPDATES_ROLE_ID for r in interaction.user.roles)
+
+        try:
+            # 4. Add or remove the role based on their current status
+            if user_has_role:
+                await interaction.user.remove_roles(role)
+                await interaction.followup.send("✅ You will no longer be notified of game updates.", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role)
+                await interaction.followup.send("✅ You will now be notified of game updates!", ephemeral=True)
+
+        except discord.Forbidden:
+            # This happens if the bot's role is lower than the "Game Updates" role
+            print("[ERROR] Bot lacks permissions to assign the Game Updates role. Make sure its role is higher in the hierarchy.")
+            await interaction.followup.send("An error occurred: I don't have permission to manage this role. Please contact an admin.", ephemeral=True)
+        except Exception as e:
+            print(f"[ERROR] An unexpected error occurred in role_button: {e}")
+            await interaction.followup.send("An unexpected server error occurred. Please try again later.", ephemeral=True)
+
+@bot.command(name="setup_role_button")
+async def setup_role_button(ctx: commands.Context):
+    """(Admin-only) Posts the persistent role-assignment message."""
+    # This check ensures only you and other developers can run this command
+    DEVELOPER_IDS = {265196052192165888, 849827666064048178}
+    if ctx.author.id not in DEVELOPER_IDS:
+        return await ctx.send("🚫 You do not have permission to use this command.")
+
+    target_channel = bot.get_channel(ROLE_BUTTON_CHANNEL_ID)
+    if not target_channel:
+        return await ctx.send(f"❌ Error: Could not find the channel with ID `{ROLE_BUTTON_CHANNEL_ID}`.")
+
+    embed = discord.Embed(
+        title="📢 Get Notified for Game Updates",
+        description="Click the button below to get the **Game Updates** role.\n\nYou'll be pinged whenever there's an important announcement about our games!",
+        color=discord.Color.blue()
+    )
+
+    # Send the message to the channel with our new view
+    await target_channel.send(embed=embed, view=RoleButtonView())
+    await ctx.send(f"✅ Role button message has been sent to {target_channel.mention}.")
+
+
+# Admin Commands
 @bot.command(name="resetstreak")
 async def resetstreak(ctx: commands.Context, member: discord.Member = None):
     """
