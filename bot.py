@@ -541,15 +541,31 @@ async def on_message(message):
 
     user_id = message.author.id
     now = time.time()
+    
+    # --- UNIFIED COOLDOWN LOGIC ---
+    last_time = last_message_times.get(user_id, 0)
+    cooldown_passed = (now - last_time) >= 3
+    
+    if cooldown_passed:
+        # Update the last message time for this user, regardless of the channel.
+        last_message_times[user_id] = now
+    # --- END UNIFIED COOLDOWN ---
 
-    if isinstance(message.channel, discord.Thread) and message.channel.parent_id == PRACTICE_ROOM_COMMAND_CHANNEL_ID:
-        # This is a practice room thread, so we skip all message counting logic for it.
-        # We do NOT return, because we still want the game logic below to run.
-        pass
+    # --- BLOCK 1: Daily Chart Tracking (Runs for ALL channels) ---
+    if cooldown_passed:
+        async with aiosqlite.connect("server_data.db") as db:
+            current_date = datetime.utcnow().strftime("%Y-%m-%d")
+            await db.execute("""
+                INSERT INTO daily_message_history (user_id, message_date, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, message_date) DO UPDATE SET count = count + 1
+            """, (user_id, current_date))
+            await db.commit()
 
-
-
-    elif message.channel.id not in EXCLUDED_CHANNEL_IDS:
+    is_practice_thread = isinstance(message.channel, discord.Thread) and message.channel.parent_id == PRACTICE_ROOM_COMMAND_CHANNEL_ID
+    
+    # This logic runs if it's not a practice thread AND not in the excluded list.
+    if not is_practice_thread and message.channel.id not in EXCLUDED_CHANNEL_IDS:
         # Check if user sent another message within 3 seconds
         last_time = last_message_times.get(user_id, 0)
         if now - last_time >= 3:
@@ -575,13 +591,6 @@ async def on_message(message):
                     VALUES (?, ?, 1)
                     ON CONFLICT(user_id, week) DO UPDATE SET count = count + 1
                 """, (user_id, current_week))
-
-                current_date = datetime.utcnow().strftime("%Y-%m-%d")
-                await db.execute("""
-                    INSERT INTO daily_message_history (user_id, message_date, count)
-                    VALUES (?, ?, 1)
-                    ON CONFLICT(user_id, message_date) DO UPDATE SET count = count + 1
-                """, (user_id, current_date))
 
                 await db.commit()
 
