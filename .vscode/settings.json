@@ -1,0 +1,4 @@
+{
+    "python.defaultInterpreterPath": ".venv/Scripts/python.exe"  // Windows
+    // "venv/bin/python" for macOS/Linux
+}

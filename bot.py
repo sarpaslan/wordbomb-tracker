@@ -16,6 +16,8 @@ import math
 import unicodedata
 from collections import defaultdict, deque
 import aiohttp
+import matplotlib.pyplot as plt
+import io
 
 # Load token
 load_dotenv()
@@ -359,6 +361,15 @@ async def on_ready():
                 turn_in_round INTEGER NOT NULL DEFAULT 1
             )
         """)
+        # --- NEW TABLE FOR DAILY MESSAGE HISTORY ---
+        await db_sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS daily_message_history (
+                user_id INTEGER NOT NULL,
+                message_date TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (user_id, message_date)
+            )
+        """)
         await db_sqlite.commit()
 
     # --- Load Word Game Assets ---
@@ -564,6 +575,13 @@ async def on_message(message):
                     VALUES (?, ?, 1)
                     ON CONFLICT(user_id, week) DO UPDATE SET count = count + 1
                 """, (user_id, current_week))
+
+                current_date = datetime.utcnow().strftime("%Y-%m-%d")
+                await db.execute("""
+                    INSERT INTO daily_message_history (user_id, message_date, count)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(user_id, message_date) DO UPDATE SET count = count + 1
+                """, (user_id, current_date))
 
                 await db.commit()
 
@@ -3773,6 +3791,99 @@ async def setup_role_button(ctx: commands.Context):
     # Send the message to the channel with our new view
     await target_channel.send(embed=embed, view=RoleButtonView())
     await ctx.send(f"✅ Role button message has been sent to {target_channel.mention}.")
+
+
+async def generate_user_chart(user: discord.Member) -> io.BytesIO | None:
+    """
+    Fetches a user's message data for the current week (Mon-Sun) and generates a bar chart.
+    Returns an in-memory image file or None if no data is available.
+    """
+    today = datetime.utcnow().date()
+    # Calculate the start of the week (Monday)
+    start_of_week = today - timedelta(days=today.weekday())
+    
+    # Create a list of all dates from Monday to the current day
+    date_range = [start_of_week + timedelta(days=i) for i in range(7)]
+    
+    # Fetch data from the database
+    user_data = {}
+    async with aiosqlite.connect("server_data.db") as db:
+        cursor = await db.execute(
+            "SELECT message_date, count FROM daily_message_history WHERE user_id = ? AND message_date >= ?",
+            (user.id, start_of_week.strftime("%Y-%m-%d"))
+        )
+        async for row in cursor:
+            user_data[row[0]] = row[1]
+            
+    # Prepare data for plotting
+    day_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    message_counts = [user_data.get(date.strftime("%Y-%m-%d"), 0) for date in date_range]
+
+    # If the user has sent no messages this week, return None
+    if sum(message_counts) == 0:
+        return None
+
+    # --- Chart Generation using Matplotlib ---
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    bars = ax.bar(day_labels, message_counts, color='#5865F2')
+
+    # Style the chart
+    ax.set_title(f"Weekly Message Activity for {user.display_name}", fontsize=16, pad=20)
+    ax.set_ylabel("Messages Sent", fontsize=12)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.tick_params(axis='x', which='major', labelsize=12, length=0)
+    ax.tick_params(axis='y', which='major', labelsize=10, length=0)
+    ax.yaxis.grid(True, linestyle='--', linewidth=0.5, color='#4E5058')
+    ax.set_ylim(0, max(message_counts) * 1.15) # Add 15% padding to the top
+
+    # Add count labels on top of each bar
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2.0, height, f'{height}', ha='center', va='bottom', fontsize=11)
+
+    plt.tight_layout()
+
+    # Save the plot to an in-memory buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    
+    return buf
+
+@bot.command(name="chart")
+async def chart(ctx: commands.Context, member: discord.Member = None):
+    """Generates a bar chart of a user's message activity for the current week."""
+    target_user = member or ctx.author
+
+    if target_user.bot:
+        return await ctx.send("Bots don't send messages to chart!")
+
+    # Provide immediate feedback to the user
+    processing_msg = await ctx.send(f"📈 Generating weekly activity chart for **{target_user.display_name}**...")
+
+    # Generate the chart image
+    chart_buffer = await generate_user_chart(target_user)
+
+    if chart_buffer:
+        # If chart data was found, create an embed and send the file
+        file = discord.File(chart_buffer, filename=f"{target_user.id}_chart.png")
+        embed = discord.Embed(
+            title=f"Message Chart for {target_user.display_name}",
+            description="Showing messages sent each day of the current week (Monday-Sunday).",
+            color=discord.Color.blue()
+        )
+        embed.set_image(url=f"attachment://{target_user.id}_chart.png")
+        embed.set_footer(text=f"Generated on: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        
+        await processing_msg.edit(content=None, embed=embed, attachments=[file])
+    else:
+        # If no data was found, inform the user
+        await processing_msg.edit(content=f"📊 No message activity found for **{target_user.display_name}** this week.")
 
 
 # Admin Commands
