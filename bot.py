@@ -219,9 +219,9 @@ VALID_PROMPTS = {}
 api_session = None
 ALLOWED_NORMALIZED_CHARS = set("abcdefghijklmnopqrstuvwxyz'-")
 
-ROUND_LENGTH = 100  # How many solves per round
+ROUND_LENGTH = 120  # How many solves per round
 ROUND_START_DIFFICULTY = 500 # The solve count for the first prompt of a round (easiest)
-ROUND_END_DIFFICULTY = 100
+ROUND_END_DIFFICULTY = 30
 
 RECENT_PROMPT_MEMORY_SIZE = 2000 # Avoid repeating the last 200 prompts
 _recent_prompts = deque(maxlen=RECENT_PROMPT_MEMORY_SIZE)
