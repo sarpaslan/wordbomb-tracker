@@ -3805,7 +3805,7 @@ async def setup_role_button(ctx: commands.Context):
         description=(
             "Click the buttons below to subscribe to notifications for topics that interest you.\n\n"
             "• **Game Updates:** Get pinged for new features and updates to our game.\n"
-            "• **Dictionary Updates:** Get pinged for major changes or additions to the game dictionary."
+            "• **Dictionary Updates:** Get pinged when the server updates to the latest dictionary version."
         ),
         color=discord.Color.blue()
     )
