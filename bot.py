@@ -586,86 +586,84 @@ async def on_message(message):
     cooldown_passed = (now - last_time) >= 3
     
     if cooldown_passed:
-        # Update the last message time for this user, regardless of the channel.
+        # Update the last message time for this user immediately.
         last_message_times[user_id] = now
-    # --- END UNIFIED COOLDOWN ---
+
+    if not cooldown_passed:
+        await bot.process_commands(message) # Still process commands on cooldown
+        return
 
     # --- BLOCK 1: Daily Chart Tracking (Runs for ALL channels) ---
-    if cooldown_passed:
-        async with aiosqlite.connect("server_data.db") as db:
-            current_date = datetime.utcnow().strftime("%Y-%m-%d")
-            await db.execute("""
-                INSERT INTO daily_message_history (user_id, message_date, count)
-                VALUES (?, ?, 1)
-                ON CONFLICT(user_id, message_date) DO UPDATE SET count = count + 1
-            """, (user_id, current_date))
-            await db.commit()
+    async with aiosqlite.connect("server_data.db") as db:
+        current_date = datetime.utcnow().strftime("%Y-%m-%d")
+        await db.execute("""
+            INSERT INTO daily_message_history (user_id, message_date, count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(user_id, message_date) DO UPDATE SET count = count + 1
+        """, (user_id, current_date))
+        await db.commit()
 
     is_practice_thread = isinstance(message.channel, discord.Thread) and message.channel.parent_id == PRACTICE_ROOM_COMMAND_CHANNEL_ID
     
     # This logic runs if it's not a practice thread AND not in the excluded list.
     if not is_practice_thread and message.channel.id not in EXCLUDED_CHANNEL_IDS:
-        # Check if user sent another message within 3 seconds
-        last_time = last_message_times.get(user_id, 0)
-        if now - last_time >= 3:
-            last_message_times[user_id] = now  # Update last valid message time
 
-            # Message tracking
+        # Message tracking
+        async with aiosqlite.connect("server_data.db") as db:
+            async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+
+            if row:
+                new_count = row[0] + 1
+                await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
+            else:
+                new_count = 1
+                await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
+
+            # ✅ CHANGE: Insert or update message count for the current week
+            # This creates a string like "2023-45" (Year-WeekNumber)
+            current_week = datetime.utcnow().strftime("%Y-%W")
+            await db.execute("""
+                INSERT INTO message_history (user_id, week, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, week) DO UPDATE SET count = count + 1
+            """, (user_id, current_week))
+
+            await db.commit()
+
+        # Assign roles if needed
+        if user_id != 265196052192165888:
+            await assign_roles(message.author, new_count, message.guild)
+
+        # Candy drop (unchanged)
+        if random.randint(1, 7000) == 1:
             async with aiosqlite.connect("server_data.db") as db:
-                async with db.execute("SELECT count FROM messages WHERE user_id = ?", (user_id,)) as cursor:
+                async with db.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,)) as cursor:
                     row = await cursor.fetchone()
 
                 if row:
-                    new_count = row[0] + 1
-                    await db.execute("UPDATE messages SET count = ? WHERE user_id = ?", (new_count, user_id))
+                    new_candy_count = row[0] + 1
+                    await db.execute("UPDATE candies SET count = ? WHERE user_id = ?", (new_candy_count, user_id))
                 else:
-                    new_count = 1
-                    await db.execute("INSERT INTO messages (user_id, count) VALUES (?, ?)", (user_id, 1))
-
-                # ✅ CHANGE: Insert or update message count for the current week
-                # This creates a string like "2023-45" (Year-WeekNumber)
-                current_week = datetime.utcnow().strftime("%Y-%W")
-                await db.execute("""
-                    INSERT INTO message_history (user_id, week, count)
-                    VALUES (?, ?, 1)
-                    ON CONFLICT(user_id, week) DO UPDATE SET count = count + 1
-                """, (user_id, current_week))
+                    new_candy_count = 1
+                    await db.execute("INSERT INTO candies (user_id, count) VALUES (?, ?)", (user_id, 1))
 
                 await db.commit()
 
-            # Assign roles if needed
-            if user_id != 265196052192165888:
-                await assign_roles(message.author, new_count, message.guild)
-
-            # Candy drop (unchanged)
-            if random.randint(1, 7000) == 1:
-                async with aiosqlite.connect("server_data.db") as db:
-                    async with db.execute("SELECT count FROM candies WHERE user_id = ?", (user_id,)) as cursor:
-                        row = await cursor.fetchone()
-
-                    if row:
-                        new_candy_count = row[0] + 1
-                        await db.execute("UPDATE candies SET count = ? WHERE user_id = ?", (new_candy_count, user_id))
-                    else:
-                        new_candy_count = 1
-                        await db.execute("INSERT INTO candies (user_id, count) VALUES (?, ?)", (user_id, 1))
-
-                    await db.commit()
-
-                await message.channel.send(
-                    f"# 🍭 CANDY DROP! 🍬\n"
-                    f"{message.author.mention}, you got a **free candy** for chatting!\n"
-                    f"You're now at **{new_candy_count}** total candies! ✨"
-                )
-                if new_candy_count >= 10:
-                    CANDY_ROLE_NAME = "CANDY GOD"
-                    role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
-                    if role and role not in message.author.roles:
-                        if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
-                            await message.author.add_roles(role)
-                            print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
-        else:
-            pass
+            await message.channel.send(
+                f"# 🍭 CANDY DROP! 🍬\n"
+                f"{message.author.mention}, you got a **free candy** for chatting!\n"
+                f"You're now at **{new_candy_count}** total candies! ✨"
+            )
+            if new_candy_count >= 10:
+                CANDY_ROLE_NAME = "CANDY GOD"
+                role = discord.utils.get(message.guild.roles, name=CANDY_ROLE_NAME)
+                if role and role not in message.author.roles:
+                    if message.guild.me.top_role > role and message.guild.me.guild_permissions.manage_roles:
+                        await message.author.add_roles(role)
+                        print(f"[DEBUG] Gave {CANDY_ROLE_NAME} role to {message.author.name}")
+    else:
+        pass
 
     # --- Word Bomb Mini-Game Logic (Definitive Version with Character Validation) ---
     async with aiosqlite.connect("server_data.db") as db:
@@ -3941,40 +3939,53 @@ async def chart(ctx: commands.Context, member: discord.Member = None):
 
 async def update_member_s_roles(member: discord.Member):
     """
-    The core logic hub for managing server tag roles based on a user's
-    highest base role and their active server tag status.
+    The core logic hub for managing server tag roles with a specific exception
+    for Language Moderators who are also Server Boosters.
     """
     if member.guild.id != TAG_CHECK_GUILD_ID or member.bot:
         return
 
     try:
-        # Step 1: Reliably check if the user has the server tag enabled for this server.
+        # Step 1: Determine the user's eligibility for an S-role.
+        
+        # Check for the specific role combination first (this is fast and local).
+        is_booster = discord.utils.get(member.roles, name="Server Booster") is not None
+        is_language_mod = discord.utils.get(member.roles, name="Language Moderator") is not None
+        booster_lm_exception = is_booster and is_language_mod
+
+        # Now, check if they have the server tag active via an API call.
         user_data = await bot.http.get_user(member.id)
         primary_guild_info = user_data.get('primary_guild')
         has_server_tag = False
         if primary_guild_info:
             if primary_guild_info.get('identity_enabled') and primary_guild_info.get('identity_guild_id') == str(TAG_CHECK_GUILD_ID):
                 has_server_tag = True
+        
+        # A member is eligible if they have the tag OR meet the specific booster+LM exception.
+        is_eligible = has_server_tag or booster_lm_exception
 
         # Step 2: Get all S-Roles the member CURRENTLY has.
         current_s_roles = [role for role in member.roles if role.name in ALL_S_ROLES]
 
-        # Step 3: Logic for when the user DOES NOT have the tag enabled.
-        if not has_server_tag:
-            if current_s_roles: # Only act if they have roles to remove
-                print(f"[S-ROLE] User '{member.name}' disabled tag. Removing {len(current_s_roles)} S-Role(s).")
-                await member.remove_roles(*current_s_roles, reason="User does not have the server tag active.")
-            return # Stop here if they don't have the tag.
-
-        # Step 4: Logic for when the user DOES have the tag enabled.
-        # Find the highest base role they have that is in our hierarchy.
+        # Step 3: Find the highest qualifying base role they have from our hierarchy.
         target_s_role_name = None
         for base_role_name, s_role_name in S_ROLE_HIERARCHY:
             if discord.utils.get(member.roles, name=base_role_name):
                 target_s_role_name = s_role_name
                 break # Stop at the first (highest) one found
 
-        # Step 5: Reconcile the roles.
+        # --- Role Reconciliation Logic ---
+        
+        # CASE A: The user is NOT eligible for any S-role.
+        if not is_eligible:
+            if current_s_roles: # If they have any S-roles, remove them all.
+                reason = "User does not have the tag active and does not meet the booster exception."
+                print(f"[S-ROLE] User '{member.name}' is not eligible. Removing {len(current_s_roles)} S-Role(s).")
+                await member.remove_roles(*current_s_roles, reason=reason)
+            return # Stop here.
+
+        # CASE B: The user IS eligible for an S-role.
+        # We now need to ensure they have the correct one and only one.
         target_s_role = discord.utils.get(member.guild.roles, name=target_s_role_name) if target_s_role_name else None
 
         roles_to_remove = []
@@ -3984,12 +3995,14 @@ async def update_member_s_roles(member: discord.Member):
                 roles_to_remove.append(role)
 
         if roles_to_remove:
+            reason = "Adjusting S-Role based on hierarchy or eligibility change."
             print(f"[S-ROLE] User '{member.name}' hierarchy changed. Removing {len(roles_to_remove)} incorrect S-Role(s).")
-            await member.remove_roles(*roles_to_remove, reason="Adjusting S-Role based on hierarchy.")
+            await member.remove_roles(*roles_to_remove, reason=reason)
 
         if target_s_role and target_s_role not in member.roles:
+            reason = "Assigning S-Role for tag or booster+LM eligibility."
             print(f"[S-ROLE] Assigning target S-Role '{target_s_role.name}' to '{member.name}'.")
-            await member.add_roles(target_s_role, reason="Assigning S-Role for active server tag.")
+            await member.add_roles(target_s_role, reason=reason)
 
     except discord.Forbidden:
         print(f"[ERROR] [S-ROLE] Lacking permissions to manage roles for user '{member.name}'. Check bot's role position.")
