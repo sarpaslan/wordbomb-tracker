@@ -239,6 +239,29 @@ ROLE_BUTTON_CHANNEL_ID = 1345408094632415324
 GAME_UPDATES_ROLE_ID = 1414412843931144283
 DICTIONARY_UPDATES_ROLE_ID = 1415715630212190300
 
+# --- ✅ NEW: HIERARCHICAL SERVER TAG ROLE CONFIGURATION ---
+TAG_CHECK_GUILD_ID = 1266397242260983888
+
+# This list defines the role hierarchy FROM HIGHEST to LOWEST.
+# The bot will use this order to determine the correct S-role.
+# Format: ("Base Role Name", "S-Role to Assign")
+S_ROLE_HIERARCHY = [
+    ("Moderator", "GM S"), # Special case
+    ("Language Moderator", "Language Moderator S"),
+    ("Supporter", "Supporter S"),
+    ("Contributor", "Contributor S"),
+    ("Word Scout", "Word Scout S"),
+    ("Server Booster", "Server Booster S"),
+    ("Veteran", "Veteran S"),
+    ("Speaker", "Speaker S"),
+    ("Talker", "Talker S"),
+    ("Active", "Active S"),
+    ("Word Bomber", "Word Bomber S"),
+]
+
+# Create a set of all S-role names for efficient lookups
+ALL_S_ROLES = {s_role_name for _, s_role_name in S_ROLE_HIERARCHY}
+
 @bot.event
 async def on_ready():
     global client, db, questions_collection, rejected_questions_collection, api_session, _status_panel_message
@@ -471,7 +494,21 @@ async def on_ready():
         if not update_status_panel.is_running():
             update_status_panel.start()
 
-    # 2. Add the new slash command group to the bot's command tree.
+    print("-" * 20)
+    print("[INFO] [S-ROLE] Starting full server scan for tag roles...")
+    guild = bot.get_guild(TAG_CHECK_GUILD_ID)
+    if guild:
+        member_count = 0
+        for member in guild.members:
+            await update_member_s_roles(member)
+            member_count += 1
+            # Add a small delay to avoid hitting API rate limits on large servers
+            if member_count % 50 == 0:
+                print(f"[S-ROLE] Scanned {member_count}/{len(guild.members)} members...")
+                await asyncio.sleep(1)
+        print(f"[SUCCESS] [S-ROLE] Full server scan completed for {len(guild.members)} members.")
+    else:
+        print(f"[ERROR] [S-ROLE] Bot is not in the target server ({TAG_CHECK_GUILD_ID}). Cannot perform scan.")
 
     print("-" * 20)
     print(f"[SUCCESS] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
@@ -3902,8 +3939,82 @@ async def chart(ctx: commands.Context, member: discord.Member = None):
     else:
         await processing_msg.edit(content=f"📊 No message activity found for **{target_user.display_name}** in the last 7 days.")
 
+async def update_member_s_roles(member: discord.Member):
+    """
+    The core logic hub for managing server tag roles based on a user's
+    highest base role and their active server tag status.
+    """
+    if member.guild.id != TAG_CHECK_GUILD_ID or member.bot:
+        return
 
-# Admin Commands
+    try:
+        # Step 1: Reliably check if the user has the server tag enabled for this server.
+        user_data = await bot.http.get_user(member.id)
+        primary_guild_info = user_data.get('primary_guild')
+        has_server_tag = False
+        if primary_guild_info:
+            if primary_guild_info.get('identity_enabled') and primary_guild_info.get('identity_guild_id') == str(TAG_CHECK_GUILD_ID):
+                has_server_tag = True
+
+        # Step 2: Get all S-Roles the member CURRENTLY has.
+        current_s_roles = [role for role in member.roles if role.name in ALL_S_ROLES]
+
+        # Step 3: Logic for when the user DOES NOT have the tag enabled.
+        if not has_server_tag:
+            if current_s_roles: # Only act if they have roles to remove
+                print(f"[S-ROLE] User '{member.name}' disabled tag. Removing {len(current_s_roles)} S-Role(s).")
+                await member.remove_roles(*current_s_roles, reason="User does not have the server tag active.")
+            return # Stop here if they don't have the tag.
+
+        # Step 4: Logic for when the user DOES have the tag enabled.
+        # Find the highest base role they have that is in our hierarchy.
+        target_s_role_name = None
+        for base_role_name, s_role_name in S_ROLE_HIERARCHY:
+            if discord.utils.get(member.roles, name=base_role_name):
+                target_s_role_name = s_role_name
+                break # Stop at the first (highest) one found
+
+        # Step 5: Reconcile the roles.
+        target_s_role = discord.utils.get(member.guild.roles, name=target_s_role_name) if target_s_role_name else None
+
+        roles_to_remove = []
+        for role in current_s_roles:
+            if not target_s_role or role.id != target_s_role.id:
+                roles_to_remove.append(role)
+
+        if roles_to_remove:
+            print(f"[S-ROLE] User '{member.name}' hierarchy changed. Removing {len(roles_to_remove)} incorrect S-Role(s).")
+            await member.remove_roles(*roles_to_remove, reason="Adjusting S-Role based on hierarchy.")
+
+        if target_s_role and target_s_role not in member.roles:
+            print(f"[S-ROLE] Assigning target S-Role '{target_s_role.name}' to '{member.name}'.")
+            await member.add_roles(target_s_role, reason="Assigning S-Role for active server tag.")
+
+    except discord.Forbidden:
+        print(f"[ERROR] [S-ROLE] Lacking permissions to manage roles for user '{member.name}'. Check bot's role position.")
+    except Exception as e:
+        print(f"[ERROR] [S-ROLE] An unexpected error occurred while updating roles for '{member.name}': {e}")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """
+    Checks a new member's server tag status when they join the server.
+    """
+    await update_member_s_roles(member)
+
+# ✅ NEW EVENT HANDLER FOR MEMBER UPDATES (ROLES, PROFILE, ETC.)
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    """
+    Re-evaluates a member's S-roles whenever their profile or roles change.
+    """
+    # This check prevents running the logic twice if only insignificant things change
+    if before.roles != after.roles or before.display_avatar != after.display_avatar:
+         await update_member_s_roles(after)
+
+
+#Admin Commands
 @bot.command(name="resetstreak")
 async def resetstreak(ctx: commands.Context, member: discord.Member = None):
     """
