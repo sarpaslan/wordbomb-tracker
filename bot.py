@@ -4103,14 +4103,21 @@ async def buy(ctx: commands.Context, item_name: str, amount: int = 1):
         return await ctx.send(f"❌ You don't have enough coins! You need **{total_cost:,}** but you only have **{user_balance:,}** <:wbcoin:1398780929664745652>.")
 
     # --- 3. API CALL (SAFETY FIRST!) ---
-    # We attempt the API call *before* deducting coins.
     try:
-        url = f"{SHOP_API_BASE_URL}/{author.id}/{item_data['api_id']}/{amount}"
-        print(f"[SHOP] Making API POST request to: {url}") # For debugging
+        # ✅ FIX: Prepare both the URL and the JSON payload as required by the API.
+        item_api_id = item_data['api_id']
+        url = f"{SHOP_API_BASE_URL}/{author.id}/{item_api_id}/{amount}"
+        
+        # This dictionary will be converted to the JSON body: {"item": "helmet", "count": 1}
+        payload = {
+            "item": item_api_id,
+            "count": amount
+        }
+        
+        print(f"[SHOP] Making API POST request to: {url} with payload: {payload}")
 
-        # api_session should already be initialized in your on_ready with the auth token
-        async with api_session.post(url) as response:
-            if response.status not in [200, 204]: # 200 OK or 204 No Content are success
+        async with api_session.post(url, json=payload) as response:
+            if response.status not in [200, 204]:
                 error_text = await response.text()
                 print(f"[ERROR] [SHOP] API call failed with status {response.status}: {error_text}")
                 raise Exception("API call failed")
@@ -4123,11 +4130,8 @@ async def buy(ctx: commands.Context, item_name: str, amount: int = 1):
         return
 
     # --- 4. COIN DEDUCTION ---
-    # This part only runs if the API call above was successful.
     success = await modify_coin_adjustment(author.id, -total_cost)
     if not success:
-        # This is a critical error state (user got item but coins weren't deducted).
-        # We must inform the user and log it.
         await ctx.send("🚨 **CRITICAL ERROR!** We gave you the item(s), but failed to deduct your coins. Please contact a developer.")
         print(f"[CRITICAL] [SHOP] API call succeeded for {author.name} but coin deduction failed!")
         return
