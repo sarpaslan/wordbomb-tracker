@@ -494,21 +494,6 @@ async def on_ready():
         if not update_status_panel.is_running():
             update_status_panel.start()
 
-    print("-" * 20)
-    print("[INFO] [S-ROLE] Starting full server scan for tag roles...")
-    guild = bot.get_guild(TAG_CHECK_GUILD_ID)
-    if guild:
-        member_count = 0
-        for member in guild.members:
-            await update_member_s_roles(member)
-            member_count += 1
-            # Add a small delay to avoid hitting API rate limits on large servers
-            if member_count % 50 == 0:
-                print(f"[S-ROLE] Scanned {member_count}/{len(guild.members)} members...")
-                await asyncio.sleep(1)
-        print(f"[SUCCESS] [S-ROLE] Full server scan completed for {len(guild.members)} members.")
-    else:
-        print(f"[ERROR] [S-ROLE] Bot is not in the target server ({TAG_CHECK_GUILD_ID}). Cannot perform scan.")
 
     print("-" * 20)
     print(f"[SUCCESS] Bot is ready. Logged in as {bot.user} ({bot.user.id})")
@@ -1214,60 +1199,75 @@ async def get_coins_leaderboard_data() -> list:
     """
     Gathers all user stats, calculates their effective coin balance, sorts the
     results, and returns them as a list of (user_id, coin_count) tuples.
+    This version is refactored to be explicitly stateless and prevent inconsistent results.
     """
-
-    user_stats = defaultdict(lambda: {
-        "messages": 0, "bugs": 0, "ideas": 0,
-        "voice_seconds": 0, "trivia": 0, "adjustment": 0
-    })
-
-    # --- Step 1: Gather all stats from the databases ---
+    # --- Step 1: Gather each stat into its own dictionary ---
+    message_counts = defaultdict(int)
+    bug_counts = defaultdict(int)
+    idea_counts = defaultdict(int)
+    voice_seconds = defaultdict(int)
+    adjustments = defaultdict(int)
+    trivia_counts = defaultdict(int)
+    
+    # Gather from SQLite
     async with aiosqlite.connect("server_data.db") as db:
         async with db.execute("SELECT user_id, count FROM messages") as cursor:
             async for user_id, count in cursor:
-                user_stats[user_id]["messages"] = count
+                message_counts[user_id] = count
         async with db.execute("SELECT user_id, count FROM bug_points") as cursor:
             async for user_id, count in cursor:
-                user_stats[user_id]["bugs"] = count
+                bug_counts[user_id] = count
         async with db.execute("SELECT user_id, count FROM idea_points") as cursor:
             async for user_id, count in cursor:
-                user_stats[user_id]["ideas"] = count
+                idea_counts[user_id] = count
         async with db.execute("SELECT user_id, seconds FROM voice_time") as cursor:
             async for user_id, seconds in cursor:
-                user_stats[user_id]["voice_seconds"] = seconds
+                voice_seconds[user_id] = seconds
         async with db.execute("SELECT user_id, adjustment_amount FROM coin_adjustments") as cursor:
             async for user_id, amount in cursor:
-                user_stats[user_id]["adjustment"] = amount
+                adjustments[user_id] = amount
 
+    # Gather from MongoDB
     if questions_collection is not None:
         try:
             pipeline = [
                 {"$unionWith": {"coll": "rejected"}},
+                {"$match": {"u": {"$ne": None}}}, # Filter out documents with null/missing user IDs
                 {"$group": {"_id": "$u", "count": {"$sum": 1}}}
             ]
             cursor = questions_collection.aggregate(pipeline)
             async for doc in cursor:
                 try:
-                    user_id = int(doc["_id"])
-                    user_stats[user_id]["trivia"] = doc["count"]
-                except (ValueError, KeyError):
+                    # The user ID from Mongo is a string, so we keep it as is for now
+                    user_id_str = doc["_id"]
+                    if user_id_str:
+                         trivia_counts[int(user_id_str)] = doc["count"]
+                except (ValueError, KeyError, TypeError):
                     continue
         except Exception as e:
             print(f"[ERROR] Could not fetch bulk trivia stats for leaderboard: {e}")
 
-    # --- Step 2: Calculate and compile the final list ---
+    # --- Step 2: Get a set of all unique user IDs from all sources ---
+    all_user_ids = set(message_counts.keys()) | set(bug_counts.keys()) | \
+                   set(idea_counts.keys()) | set(voice_seconds.keys()) | \
+                   set(adjustments.keys()) | set(trivia_counts.keys())
+
+    # --- Step 3: Calculate totals in a single, deterministic loop ---
     leaderboard_entries = []
-    for user_id, stats in user_stats.items():
-        message_coins = stats["messages"] * 75
-        bug_coins = stats["bugs"] * 50000
-        idea_coins = stats["ideas"] * 40000
-        voice_coins = int((stats["voice_seconds"] / 3600) * 5000)
-        trivia_coins = stats["trivia"] * 20000
-        total_coins = message_coins + bug_coins + idea_coins + voice_coins + trivia_coins + stats["adjustment"]
+    for user_id in all_user_ids:
+        message_coins = message_counts.get(user_id, 0) * 75
+        bug_coins = bug_counts.get(user_id, 0) * 50000
+        idea_coins = idea_counts.get(user_id, 0) * 40000
+        voice_coins = int((voice_seconds.get(user_id, 0) / 3600) * 5000)
+        trivia_coins = trivia_counts.get(user_id, 0) * 20000
+        
+        total_coins = message_coins + bug_coins + idea_coins + voice_coins + \
+                      trivia_coins + adjustments.get(user_id, 0)
+
         if total_coins > 0:
             leaderboard_entries.append((user_id, total_coins))
 
-    # --- Step 3: Sort and return the final data ---
+    # --- Step 4: Sort and return the final, consistent data ---
     leaderboard_entries.sort(key=lambda item: item[1], reverse=True)
     return leaderboard_entries
 
