@@ -262,6 +262,27 @@ S_ROLE_HIERARCHY = [
 # Create a set of all S-role names for efficient lookups
 ALL_S_ROLES = {s_role_name for _, s_role_name in S_ROLE_HIERARCHY}
 
+SHOP_API_BASE_URL = "https://1266394578702041119.discordsays.com/.proxy/player/inventory/add"
+
+SHOP_ITEMS = {
+    # The key is the lowercase name used in the command (e.g., !shop buy chest)
+    "chest": {
+        "price": 1_000_000,
+        "emoji_id": 1418624648995930314, # This ID is now used for the emoji AND the API call
+        "reward_text": "Gives **50,000** Coins & **5,000** EXP"
+    },
+    "ring": {
+        "price": 700_000,
+        "emoji_id": 1418624665311514645,
+        "reward_text": "Gives **10** Diamonds"
+    },
+    "helmet": {
+        "price": 350_000,
+        "emoji_id": 1418624657539469382,
+        "reward_text": "Gives **5** Diamonds"
+    }
+}
+
 @bot.event
 async def on_ready():
     global client, db, questions_collection, rejected_questions_collection, api_session, _status_panel_message
@@ -4026,6 +4047,101 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     # This check prevents running the logic twice if only insignificant things change
     if before.roles != after.roles or before.display_avatar != after.display_avatar:
          await update_member_s_roles(after)
+
+
+@bot.group(name="shop", invoke_without_command=True)
+async def shop(ctx: commands.Context):
+    """Displays the item shop embed. This runs when a user types just '!shop'."""
+    # This block runs if the user just typed "!shop" without a subcommand like "buy".
+    if ctx.invoked_subcommand is None:
+        user_balance = await get_effective_balance(ctx.author.id)
+
+        embed = discord.Embed(
+            title="<:wbcoin:1398780929664745652> Item Shop",
+            description="Use `!shop buy <item> [amount]` to purchase an item.",
+            color=discord.Color.blue()
+        )
+
+        # Loop through the items and add a field for each one
+        for item_name, data in SHOP_ITEMS.items():
+            emoji = f"<:item:{data['emoji_id']}>"
+            price = data['price']
+            reward = data['reward_text']
+            
+            embed.add_field(
+                name=f"{emoji} {item_name.capitalize()}",
+                value=f"**Cost:** {price:,} <:wbcoin:1398780929664745652>\n*Reward: {reward}*",
+                inline=True
+            )
+        
+        embed.set_footer(text=f"Your current balance: {user_balance:,} coins")
+        await ctx.send(embed=embed)
+
+
+@shop.command(name="buy")
+async def buy(ctx: commands.Context, item_name: str, amount: int = 1):
+    """Handles the logic for purchasing an item from the shop."""
+    author = ctx.author
+    item_name_lower = item_name.lower()
+
+    # --- 1. VALIDATION ---
+    if item_name_lower not in SHOP_ITEMS:
+        valid_items = ", ".join(SHOP_ITEMS.keys())
+        return await ctx.send(f"❌ That's not a valid item. Valid items are: `{valid_items}`")
+    
+    if amount <= 0:
+        return await ctx.send("❌ You must purchase a positive amount.")
+
+    item_data = SHOP_ITEMS[item_name_lower]
+    total_cost = item_data["price"] * amount
+    
+    # --- 2. BALANCE CHECK ---
+    user_balance = await get_effective_balance(author.id)
+    if user_balance < total_cost:
+        return await ctx.send(f"❌ You don't have enough coins! You need **{total_cost:,}** but you only have **{user_balance:,}** <:wbcoin:1398780929664745652>.")
+
+    # --- 3. API CALL (SAFETY FIRST!) ---
+    try:
+        # ✅ FIX: The item parameter in the URL now correctly uses the emoji_id.
+        item_id_for_api = item_data['emoji_id']
+        url = f"{SHOP_API_BASE_URL}/{author.id}/{item_id_for_api}/{amount}"
+        
+        print(f"[SHOP] Making API POST request to: {url}") # For debugging
+
+        async with api_session.post(url) as response:
+            if response.status not in [200, 204]:
+                error_text = await response.text()
+                print(f"[ERROR] [SHOP] API call failed with status {response.status}: {error_text}")
+                raise Exception("API call failed")
+
+        print(f"[SHOP] API call successful for {author.name}.")
+
+    except Exception as e:
+        await ctx.send("❌ An error occurred while contacting the game server. Your purchase has been cancelled, and you have not been charged. Please try again later.")
+        print(f"[ERROR] [SHOP] An exception occurred during the API call: {e}")
+        return
+
+    # --- 4. COIN DEDUCTION ---
+    success = await modify_coin_adjustment(author.id, -total_cost)
+    if not success:
+        await ctx.send("🚨 **CRITICAL ERROR!** We gave you the item(s), but failed to deduct your coins. Please contact a developer.")
+        print(f"[CRITICAL] [SHOP] API call succeeded for {author.name} but coin deduction failed!")
+        return
+
+    # --- 5. CONFIRMATION MESSAGE ---
+    new_balance = user_balance - total_cost
+    emoji = f"<:item:{item_data['emoji_id']}>"
+    
+    embed = discord.Embed(
+        title="✅ Purchase Successful!",
+        description=f"You successfully purchased **{amount}x {emoji} {item_name.capitalize()}**!",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Total Cost", value=f"{total_cost:,} <:wbcoin:1398780929664745652>", inline=True)
+    embed.add_field(name="New Balance", value=f"{new_balance:,} <:wbcoin:1398780929664745652>", inline=True)
+    embed.set_footer(text=f"Thank you for your purchase, {author.display_name}!")
+    
+    await ctx.send(embed=embed)
 
 
 #Admin Commands
