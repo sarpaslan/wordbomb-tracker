@@ -3941,54 +3941,68 @@ async def chart(ctx: commands.Context, member: discord.Member = None):
 
 async def update_member_s_roles(member: discord.Member):
     """
-    The core logic hub for managing server tag roles based on a user's
-    highest base role and their active server tag status.
+    The core logic hub for managing server tag roles.
+    Server Boosters are exempt and receive the S-role regardless of tag status.
     """
     if member.guild.id != TAG_CHECK_GUILD_ID or member.bot:
         return
 
     try:
-        # Step 1: Reliably check if the user has the server tag enabled for this server.
+        # Step 1: Determine the user's eligibility for an S-role.
+        
+        # First, check if the member is a Server Booster.
+        is_booster = discord.utils.get(member.roles, name="Server Booster") is not None
+
+        # Second, check if they have the server tag active via an API call.
         user_data = await bot.http.get_user(member.id)
         primary_guild_info = user_data.get('primary_guild')
         has_server_tag = False
         if primary_guild_info:
             if primary_guild_info.get('identity_enabled') and primary_guild_info.get('identity_guild_id') == str(TAG_CHECK_GUILD_ID):
                 has_server_tag = True
+        
+        # A member is eligible if they are a booster OR have the tag.
+        is_eligible = is_booster or has_server_tag
 
         # Step 2: Get all S-Roles the member CURRENTLY has.
         current_s_roles = [role for role in member.roles if role.name in ALL_S_ROLES]
 
-        # Step 3: Logic for when the user DOES NOT have the tag enabled.
-        if not has_server_tag:
-            if current_s_roles: # Only act if they have roles to remove
-                print(f"[S-ROLE] User '{member.name}' disabled tag. Removing {len(current_s_roles)} S-Role(s).")
-                await member.remove_roles(*current_s_roles, reason="User does not have the server tag active.")
-            return # Stop here if they don't have the tag.
-
-        # Step 4: Logic for when the user DOES have the tag enabled.
-        # Find the highest base role they have that is in our hierarchy.
+        # Step 3: Find the highest qualifying base role they have from our hierarchy.
         target_s_role_name = None
         for base_role_name, s_role_name in S_ROLE_HIERARCHY:
             if discord.utils.get(member.roles, name=base_role_name):
                 target_s_role_name = s_role_name
                 break # Stop at the first (highest) one found
 
-        # Step 5: Reconcile the roles.
+        # --- Role Reconciliation Logic ---
+        
+        # CASE A: The user is NOT eligible for any S-role.
+        if not is_eligible:
+            if current_s_roles: # If they have any S-roles, remove them all.
+                reason = "User is not a Server Booster and does not have the tag active."
+                print(f"[S-ROLE] User '{member.name}' is not eligible. Removing {len(current_s_roles)} S-Role(s).")
+                await member.remove_roles(*current_s_roles, reason=reason)
+            return # Stop here.
+
+        # CASE B: The user IS eligible for an S-role.
+        # We now need to ensure they have the correct one and only one.
         target_s_role = discord.utils.get(member.guild.roles, name=target_s_role_name) if target_s_role_name else None
 
         roles_to_remove = []
         for role in current_s_roles:
+            # If the user has an S-role that is NOT their target, mark it for removal.
             if not target_s_role or role.id != target_s_role.id:
                 roles_to_remove.append(role)
 
         if roles_to_remove:
+            reason = "Adjusting S-Role based on hierarchy or eligibility change."
             print(f"[S-ROLE] User '{member.name}' hierarchy changed. Removing {len(roles_to_remove)} incorrect S-Role(s).")
-            await member.remove_roles(*roles_to_remove, reason="Adjusting S-Role based on hierarchy.")
+            await member.remove_roles(*roles_to_remove, reason=reason)
 
         if target_s_role and target_s_role not in member.roles:
+            reason = "Assigning S-Role for boosting or active server tag."
             print(f"[S-ROLE] Assigning target S-Role '{target_s_role.name}' to '{member.name}'.")
-            await member.add_roles(target_s_role, reason="Assigning S-Role for active server tag.")
+            await member.add_roles(target_s_role, reason=reason)
 
     except discord.Forbidden:
         print(f"[ERROR] [S-ROLE] Lacking permissions to manage roles for user '{member.name}'. Check bot's role position.")
@@ -4324,38 +4338,6 @@ async def addstats_error(ctx, error):
         await ctx.send("❌ Couldn't find that member or the amount provided was not a valid whole number.")
     else:
         print(f"An unhandled error occurred in the addstats command: {error}")
-
-
-# @bot.command(name="deletechannel", aliases=["delchannel", "removechannel"])
-# async def delete_channel(ctx: commands.Context, channel_id: int):
-#     """
-#     Deletes the channel with the given ID.
-#     """
-#     # Try to fetch the channel
-#     ALLOWED_USER_ID = 849827666064048178
-#
-#     if ctx.author.id != ALLOWED_USER_ID:
-#         return await ctx.send("🚫 You are not authorized to use this powerful command.")
-#
-#     channel = bot.get_channel(channel_id)
-#
-#     if not channel:
-#         await ctx.send("❌ Could not find a channel with that ID.")
-#         return
-#
-#     # Double-check it's in the same guild
-#     if channel.guild != ctx.guild:
-#         await ctx.send("❌ That channel doesn't belong to this server.")
-#         return
-#
-#     try:
-#         await channel.delete(reason=f"Deleted by {ctx.author} via command.")
-#         await ctx.send(f"✅ Channel **#{channel.name}** has been deleted.")
-#     except discord.Forbidden:
-#         await ctx.send("❌ I don't have permission to delete that channel.")
-#     except Exception as e:
-#         await ctx.send("❌ An unexpected error occurred.")
-#         print(f"[ERROR] Failed to delete channel {channel_id}: {e}")
 
 @bot.command(name="resetcoins")
 async def reset_coins(ctx: commands.Context):
