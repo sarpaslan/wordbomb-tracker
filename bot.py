@@ -140,10 +140,9 @@ EXCLUDED_VC_IDS = {1390402088483422289, 1390454038142914720}
 last_message_times = {}
 
 OTHER_BOTS_COMMANDS = {
-    "Word Bomb": ["/claims - Get claims information",
+    "Word Bomb": ["/claims - Get information regarding claims",
                   "/collection - Get collection information for a user",
                   "/discoveries - Get discovery information for a user",
-                  "/inventory - See your word and syllable inventory",
                   "/love - See how much love sparks between two users!",
                   "/profile - Get profile information for a user",
                   "/wallet - See your wallet!",
@@ -154,6 +153,7 @@ OTHER_BOTS_COMMANDS = {
                           "!give - Give a user <:wbcoin:1398780929664745652>",
                           "!bj `<amount>` - Play blackjack to earn <:wbcoin:1398780929664745652>!",
                           "!cf `<amount>` - Do a coinflip and test your luck to earn <:wbcoin:1398780929664745652>!",
+                          "!shop - View the shop and buy items that go into your inventory",
                           "!help - Get help on the usage of commands"],
     "Talk to get more roles!": ["Active - 100 messages",
                                 "Talker - 1,000 messages",
